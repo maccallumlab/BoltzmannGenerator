@@ -7,14 +7,13 @@ import numpy as np
 import mdtraj as md
 from tqdm import tqdm
 from matplotlib import pyplot as pp
-import matplotlib
 import time
 
 
-matplotlib.use("Qt4Agg")
-pp.ion()
+# Use the GPU if available
+device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
-# t = md.load("5ura_apo_dry_r9_p6t10_p100.pdb")
+print("Loading trajectory")
 t = md.load("5ura_apo_solv_r9_p6t10_p5.dcd", top="5ura_apo_dry_r9_p6t10_p100.pdb")
 ind = t.top.select("backbone and resid 20 to 40")
 t = t.atom_slice(ind)
@@ -25,6 +24,8 @@ training_data = t.xyz
 n_dim = training_data.shape[1] * 3
 training_data_npy = training_data.reshape(-1, n_dim)
 training_data = torch.from_numpy(training_data_npy.astype("float32"))
+print("Trajectory loaded")
+print("Data has size:", training_data.shape)
 
 
 class CreateFC:
@@ -54,50 +55,45 @@ class CreateFC:
         torch.nn.init.zeros_(lin4.bias)
 
         return nn.Sequential(
-            lin1, nn.LeakyReLU(), lin2, nn.LeakyReLU(), lin3, nn.LeakyReLU(), lin4
+            lin1, nn.ReLU(), lin2, nn.ReLU(), lin3, nn.ReLU(), lin4
         )
 
 
 # Build the network
 nodes = [Ff.InputNode(n_dim, name="input")]
 nodes.append(Ff.Node(nodes[-1], pca.PCA, {"training_data": training_data}, name="pca"))
-n_glow = 4
+n_glow = 16
 for i in range(n_glow):
     nodes.append(Ff.Node(nodes[-1], Fm.PermuteRandom, {"seed": i}, name=f"permute_{i}"))
     nodes.append(
         Ff.Node(
             nodes[-1],
             Fm.GLOWCouplingBlock,
-            {"subnet_constructor": CreateFC(128), "clamp": 2},
+            {"subnet_constructor": CreateFC(1024), "clamp": 2},
             name=f"glow_{i}",
         )
     )
 nodes.append(Ff.OutputNode(nodes[-1], name="output"))
 net = Ff.ReversibleGraphNet(nodes, verbose=False)
 
+net = net.to(device=device)
+
 losses = []
 val_losses = []
-epochs = 2000
+epochs = 20_000
 n_batch = 128  # This is the number of data points per batch
 
 n = training_data_npy.shape[0]
 n_val = 128
 np.random.shuffle(training_data_npy)
 
-val_data = torch.as_tensor(training_data_npy[:n_val, :])
-train_data = torch.as_tensor(training_data_npy[n_val:, :])
+val_data = torch.as_tensor(training_data_npy[:n_val, :], device=device)
+train_data = torch.as_tensor(training_data_npy[n_val:, :], device=device)
 I = np.arange(train_data.shape[0])  # A list of indices into the training set
 
 learning_rate = 1e-4
 optimizer = torch.optim.Adam(net.parameters(), lr=learning_rate)
-
-# Setup stuff for animation
-fig = pp.figure()
-ax = pp.axes(xlim=(-4, 4), ylim=(-4, 4))
-line, = ax.plot([], [], linestyle="None", marker="o")
-
-pp.show(False)
-pp.draw()
+scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=50, verbose=True)
 
 with tqdm(range(epochs)) as progress:
     for epoch in progress:
@@ -125,29 +121,25 @@ with tqdm(range(epochs)) as progress:
                 )
                 losses.append(loss.item())
                 val_losses.append(val_loss.item())
-
-                z_draw = z_val.detach().numpy()
-                line.set_data(z_draw[:, 0], z_draw[:, 1])
-
-                fig.canvas.draw()
-                pp.draw()
-                pp.pause(0.0001)
+                scheduler.step(val_loss.item())
 
                 progress.set_postfix(
                     loss=f"{loss.item():8.3f}", val_loss=f"{val_loss.item():8.3f}"
                 )
 
+print("Done training")
+print("Losses saved as losses.pdf")
+pp.plot(losses)
+pp.plot(val_losses)
+pp.savefig("losses.pdf")
 
-samples = torch.normal(0, 1, size=(2048, z.shape[1]))
-x = net(samples, rev=True)
-x = x.detach().numpy()
+print("Generating samples from model")
+with torch.no_grad():
+    samples = torch.normal(0, 1, size=(1024, z.shape[1]), device=device)
+    x = net(samples, rev=True)
+    x = x.cpu().detach().numpy()
 x = x.reshape(x.shape[0], -1, 3)
 t.unitcell_lengths = None
 t.unitcell_angles = None
 t.xyz = x
 t.save("out.pdb")
-pp.ioff()
-pp.figure()
-pp.plot(losses)
-pp.plot(val_losses)
-pp.show()
