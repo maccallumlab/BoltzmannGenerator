@@ -13,11 +13,6 @@ class PCA(nn.Module):
         self.dims = dims_in[0][0]
 
         # compute our whiten / blackening matrices, etc
-        self.whiten = None
-        self.blacken = None
-        self.means = None
-        self.stds = None
-        self.jac = None
         training_data = torch.as_tensor(training_data)
         self._validate_training_data(training_data)
         self._compute_decomp(training_data)
@@ -66,7 +61,8 @@ class PCA(nn.Module):
     def _compute_decomp(self, training_data):
         with torch.no_grad():
             # mean center the data
-            self.means = nn.Parameter(torch.mean(training_data, 0), requires_grad=False)
+            means = torch.mean(training_data, 0)
+            self.register_buffer("means", means)
             training_data = training_data - self.means.expand_as(training_data)
 
             # do the SVD
@@ -77,22 +73,19 @@ class PCA(nn.Module):
                 raise RuntimeError("All eigenvalues should be positive.")
 
             # Throw away the last 6 dof.
-            self.stds = nn.Parameter(
-                S[:-6] / math.sqrt(training_data.shape[0] - 1), requires_grad=False
-            )
+            stds = S[:-6] / math.sqrt(training_data.shape[0] - 1)
+            self.register_buffer("stds", stds)
             V = V[:, :-6]
 
             # Store the jacobian for later.
-            self.jac = nn.Parameter(
-                torch.sum(torch.log(self.stds)), requires_grad=False
-            )
+            jac = torch.sum(torch.log(self.stds))
+            self.register_buffer("jac", jac)
 
             # Store the whitening / blackening matrices for later.
             # The unsqueeze(0) adds a dummy leading dimension, which 
             # allows us to matrix multiply by a batch of samples.
-            self.whiten = nn.Parameter(
-                (torch.diag(1.0 / self.stds) @ V.t()).unsqueeze(0), requires_grad=False
-            )
-            self.blacken = nn.Parameter(
-                (V @ torch.diag(self.stds)).unsqueeze(0), requires_grad=False
-            )
+            whiten = (torch.diag(1.0 / self.stds) @ V.t()).unsqueeze(0)
+            blacken = (V @ torch.diag(self.stds)).unsqueeze(0)
+            self.register_buffer("whiten", whiten)
+            self.register_buffer("blacken", blacken)
+

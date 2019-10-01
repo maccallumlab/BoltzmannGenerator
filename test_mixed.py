@@ -96,20 +96,22 @@ net = net.to(device=device)
 #
 losses = []
 val_losses = []
-epochs = 200
+epochs = 10_000
 n_batch = 64  # This is the number of data points per batch
 
 n = training_data_npy.shape[0]
 n_val = n // 10
 np.random.shuffle(training_data_npy)
 
-val_data = torch.as_tensor(training_data_npy[:n_val, :], device=device)
-train_data = torch.as_tensor(training_data_npy[n_val:, :], device=device)
+val_data = torch.as_tensor(training_data_npy[:n_val, :], device=device, dtype=torch.float32)
+train_data = torch.as_tensor(training_data_npy[n_val:, :], device=device, dtype=torch.float32)
+
 I = np.arange(train_data.shape[0])  # A list of indices into the training set
 Ival = np.arange(val_data.shape[0])
 
 learning_rate = 1e-4
 optimizer = torch.optim.Adam(net.parameters(), lr=learning_rate)
+scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=40)
 
 with tqdm(range(epochs)) as progress:
     for epoch in progress:
@@ -138,6 +140,8 @@ with tqdm(range(epochs)) as progress:
                     0.5 * torch.mean(z_val ** 2)
                     - torch.mean(net.log_jacobian(run_forward=False)) / z_val.shape[1]
                 )
+                scheduler.step(val_loss)
+
                 losses.append(loss.item())
                 val_losses.append(val_loss.item())
 
@@ -145,10 +149,11 @@ with tqdm(range(epochs)) as progress:
                     loss=f"{loss.item():8.3f}", val_loss=f"{val_loss.item():8.3f}"
                 )
 
-
-samples = torch.normal(0, 1, size=(128, z.shape[1]), device=device)
-x = net(samples, rev=True)
-x = x.cpu().detach().numpy()
+with torch.no_grad():
+    net.eval()
+    samples = torch.normal(0, 1, size=(128, z.shape[1]), device=device)
+    x = net(samples, rev=True)
+    x = x.cpu().detach().numpy()
 x = x.reshape(x.shape[0], -1, 3)
 t.unitcell_lengths = None
 t.unitcell_angles = None

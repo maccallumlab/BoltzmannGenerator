@@ -48,7 +48,7 @@ net = Ff.ReversibleGraphNet(nodes, verbose=False)
 
 with torch.no_grad():
     # Run some samples through the network forward
-    x = training_data[:16, :]
+    x = training_data[:32, :]
     z_samples = net(x)
     z_jac = net.log_jacobian(run_forward=False)
 

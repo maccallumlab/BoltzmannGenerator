@@ -5,49 +5,54 @@ import FrEIA.modules as Fm
 import math
 
 
-def calc_bonds(ix1, iy1, iz1, ix2, iy2, iz2, coords):
-    return torch.sqrt(
-        (coords[:, ix1] - coords[:, ix2]) ** 2
-        + (coords[:, iy1] - coords[:, iy2]) ** 2
-        + (coords[:, iz1] - coords[:, iz2]) ** 2
-    )
+def calc_bonds(ind1, ind2, coords):
+    """Calculate bond lengths
+
+    Parameters
+    ----------
+    ind1 : torch.LongTensor
+        A n_bond x 3 tensor of indices for the coordinates of particle 1
+    ind2 : torch.LongTensor
+        A n_bond x 3 tensor of indices for the coordinates of particle 2
+    coords : torch.tensor
+        A n_batch x n_coord tensor of flattened input coordinates
+    """
+    p1 = coords[:, ind1]
+    p2 = coords[:, ind2]
+    return torch.norm(p2 - p1, dim=2)
 
 
-def calc_angles(ix1, iy1, iz1, ix2, iy2, iz2, ix3, iy3, iz3, coords):
-    b = coords[:, [ix1, iy1, iz1]]
-    c = coords[:, [ix2, iy2, iz2]]
-    d = coords[:, [ix3, iy3, iz3]]
+def calc_angles(ind1, ind2, ind3, coords):
+    b = coords[:, ind1]
+    c = coords[:, ind2]
+    d = coords[:, ind3]
     bc = b - c
-    bc = bc / torch.norm(bc, dim=1, keepdim=True)
+    bc = bc / torch.norm(bc, dim=2, keepdim=True)
     cd = d - c
-    cd = cd / torch.norm(cd, dim=1, keepdim=True)
-    cos_angle = torch.sum(bc * cd, dim=1)
+    cd = cd / torch.norm(cd, dim=2, keepdim=True)
+    cos_angle = torch.sum(bc * cd, dim=2)
     angle = torch.acos(cos_angle)
     return angle
 
 
-def calc_dihedrals(ix1, iy1, iz1, ix2, iy2, iz2, ix3, iy3, iz3, ix4, iy4, iz4, coords):
-    a = coords[:, [ix1, iy1, iz1]]
-    b = coords[:, [ix2, iy2, iz2]]
-    c = coords[:, [ix3, iy3, iz3]]
-    d = coords[:, [ix4, iy4, iz4]]
+def calc_dihedrals(ind1, ind2, ind3, ind4, coords):
+    a = coords[:, ind1]
+    b = coords[:, ind2]
+    c = coords[:, ind3]
+    d = coords[:, ind4]
 
     b0 = a - b
     b1 = c - b
-    b1 = b1 / torch.norm(b1, dim=1, keepdim=True)
+    b1 = b1 / torch.norm(b1, dim=2, keepdim=True)
     b2 = d - c
 
-    v = b0 - torch.sum(b0 * b1, dim=1, keepdim=True) * b1
-    w = b2 - torch.sum(b2 * b1, dim=1, keepdim=True) * b1
-    x = torch.sum(v * w, dim=1)
-    b1xv = torch.cross(b1, v, dim=1)
-    y = torch.sum(b1xv * w, dim=1)
+    v = b0 - torch.sum(b0 * b1, dim=2, keepdim=True) * b1
+    w = b2 - torch.sum(b2 * b1, dim=2, keepdim=True) * b1
+    x = torch.sum(v * w, dim=2)
+    b1xv = torch.cross(b1, v, dim=2)
+    y = torch.sum(b1xv * w, dim=2)
     angle = torch.atan2(y, x)
     return -angle
-
-
-def _indices_for_atom(index):
-    return [3 * index, 3 * index + 1, 3 * index + 2]
 
 
 class InternalCoordinateTransform(nn.Module):
@@ -62,22 +67,9 @@ class InternalCoordinateTransform(nn.Module):
         self.dims = dims_in[0][0]
         self.jac = None
 
-        self.sorted_z_indices = None
-        self.modified_indices = None
-        self.bond_indices = None
-        self.angle_indices = None
-        self.dih_indices = None
-        self._setup_indices(z_indices)
-
-        self._validate_training_data(training_data)
-
-        self.mean_bonds = None
-        self.std_bonds = None
-        self.mean_angles = None
-        self.std_angles = None
-        self.mean_dih = None
-        self.std_dih = None
         with torch.no_grad():
+            self._setup_indices(z_indices)
+            self._validate_training_data(training_data)
             self.jac = torch.zeros(training_data.shape[0])
             transformed = self._fwd(training_data)
             self._setup_mean_bonds(transformed)
@@ -136,34 +128,34 @@ class InternalCoordinateTransform(nn.Module):
 
     def _fwd(self, x):
         x = x.clone()
-        for ind4, (ind1, ind2, ind3) in reversed(self.sorted_z_indices):
-            # Get the cartesian indices for these atoms.
-            inds1 = _indices_for_atom(ind1)
-            inds2 = _indices_for_atom(ind2)
-            inds3 = _indices_for_atom(ind3)
-            inds4 = _indices_for_atom(ind4)
+        # we can do everything in parallel...
+        inds1 = self.inds_for_atom[self.rev_z_indices[:, 1]]
+        inds2 = self.inds_for_atom[self.rev_z_indices[:, 2]]
+        inds3 = self.inds_for_atom[self.rev_z_indices[:, 3]]
+        inds4 = self.inds_for_atom[self.rev_z_indices[:, 0]]
 
-            # Calculate the bonds, angles, and torions for a batch.
-            bonds = calc_bonds(*inds1, *inds4, coords=x)
-            angles = calc_angles(*inds2, *inds1, *inds4, coords=x)
-            dihedrals = calc_dihedrals(*inds3, *inds2, *inds1, *inds4, coords=x)
+        # Calculate the bonds, angles, and torions for a batch.
+        bonds = calc_bonds(inds1, inds4, coords=x)
+        angles = calc_angles(inds2, inds1, inds4, coords=x)
+        dihedrals = calc_dihedrals(inds3, inds2, inds1, inds4, coords=x)
 
-            self.jac += 2 * torch.log(bonds) + torch.log(torch.abs(torch.sin(angles)))
+        jac = 2 * torch.sum(torch.log(bonds) + torch.log(torch.abs(torch.sin(angles))), dim=1)
+        self.jac += jac
 
-            # Replace the cartesian coordinates with internal coordinates.
-            x[:, inds4[0]] = bonds
-            x[:, inds4[1]] = angles
-            x[:, inds4[2]] = dihedrals
+        # Replace the cartesian coordinates with internal coordinates.
+        x[:, inds4[:, 0]] = bonds
+        x[:, inds4[:, 1]] = angles
+        x[:, inds4[:, 2]] = dihedrals
         return x
 
     def _rev(self, x):
         x = x.clone()
-        for ind4, (ind1, ind2, ind3) in self.sorted_z_indices:
+        for ind4, ind1, ind2, ind3 in self.sorted_z_indices:
             # Get the cartesian indices for these atoms.
-            inds1 = _indices_for_atom(ind1)
-            inds2 = _indices_for_atom(ind2)
-            inds3 = _indices_for_atom(ind3)
-            inds4 = _indices_for_atom(ind4)
+            inds1 = self.inds_for_atom[ind1, :].unsqueeze(0)
+            inds2 = self.inds_for_atom[ind2, :].unsqueeze(0)
+            inds3 = self.inds_for_atom[ind3, :].unsqueeze(0)
+            inds4 = self.inds_for_atom[ind4, :].unsqueeze(0)
 
             # Get the positions of the 4 reconstructing atoms
             p1 = x[:, inds1]
@@ -171,31 +163,34 @@ class InternalCoordinateTransform(nn.Module):
             p3 = x[:, inds3]
 
             # Get the distance, angle, and torsion
-            d14 = x[:, inds4[0]].unsqueeze(1)
-            a124 = x[:, inds4[1]].unsqueeze(1)
-            t1234 = x[:, inds4[2]].unsqueeze(1)
+            d14 = x[:, inds4[:, 0]].unsqueeze(2)
+            a124 = x[:, inds4[:, 1]].unsqueeze(2)
+            t1234 = x[:, inds4[:, 2]].unsqueeze(2)
 
-            self.jac += 2 * torch.log(d14.squeeze()) + torch.log(
-                torch.abs(torch.sin(a124.squeeze()))
-            )
+            # self.jac += 2 * torch.log(d14.squeeze()) + torch.log(
+            # self.jac += 2 * torch.log(d14.squeeze()) + torch.log(
+            #     torch.abs(torch.sin(a124.squeeze()))
+            # )
+            jac = 2 * torch.sum(torch.log(d14.squeeze(2)) + torch.log(torch.abs(torch.sin(a124.squeeze(2)))), dim=1)
+            self.jac += jac
 
             # Reconstruct the position of p4
             v1 = p1 - p2
             v2 = p1 - p3
 
-            n = torch.cross(v1, v2)
-            n = n / torch.norm(n, dim=1, keepdim=True)
-            nn = torch.cross(v1, n)
-            nn = nn / torch.norm(nn, dim=1, keepdim=True)
+            n = torch.cross(v1, v2, dim=2)
+            n = n / torch.norm(n, dim=2, keepdim=True)
+            nn = torch.cross(v1, n, dim=2)
+            nn = nn / torch.norm(nn, dim=2, keepdim=True)
 
             n = n * torch.sin(t1234)
             nn = nn * torch.cos(t1234)
-
+            
             v3 = n + nn
-            v3 = v3 / torch.norm(v3, dim=1, keepdim=True)
+            v3 = v3 / torch.norm(v3, dim=2, keepdim=True)
             v3 = v3 * d14 * torch.sin(a124)
 
-            v1 = v1 / torch.norm(v1, dim=1, keepdim=True)
+            v1 = v1 / torch.norm(v1, dim=2, keepdim=True)
             v1 = v1 * d14 * torch.cos(a124)
 
             # Store the final position in x
@@ -204,21 +199,26 @@ class InternalCoordinateTransform(nn.Module):
         return x
 
     def _setup_mean_bonds(self, x):
-        self.mean_bonds = torch.nn.Parameter(torch.mean(x[:, self.bond_indices], dim=0), requires_grad=False)
+        mean_bonds = torch.mean(x[:, self.bond_indices], dim=0)
+        self.register_buffer("mean_bonds", mean_bonds)
 
     def _setup_std_bonds(self, x):
-        self.std_bonds = torch.nn.Parameter(torch.std(x[:, self.bond_indices], dim=0) + 1e-3, requires_grad=False)
+        std_bonds = torch.std(x[:, self.bond_indices], dim=0) + 1e-3
+        self.register_buffer("std_bonds", std_bonds)
 
     def _setup_mean_angles(self, x):
-        self.mean_angles = torch.nn.Parameter(torch.mean(x[:, self.angle_indices], dim=0), requires_grad=False)
+        mean_angles = torch.mean(x[:, self.angle_indices], dim=0)
+        self.register_buffer("mean_angles", mean_angles)
 
     def _setup_std_angles(self, x):
-        self.std_angles = torch.nn.Parameter(torch.std(x[:, self.angle_indices], dim=0) + 1e-3, requires_grad=False)
+        std_angles = torch.std(x[:, self.angle_indices], dim=0) + 1e-3
+        self.register_buffer("std_angles", std_angles)
 
     def _setup_mean_dih(self, x):
         sin = torch.mean(torch.sin(x[:, self.dih_indices]), dim=0)
         cos = torch.mean(torch.cos(x[:, self.dih_indices]), dim=0)
-        self.mean_dih = torch.nn.Parameter(torch.atan2(sin, cos), requires_grad=False)
+        mean_dih = torch.atan2(sin, cos)
+        self.register_buffer("mean_dih", mean_dih)
 
     def _fix_dih(self, x):
         dih = x[:, self.dih_indices]
@@ -227,7 +227,8 @@ class InternalCoordinateTransform(nn.Module):
         x[:, self.dih_indices] = dih
 
     def _setup_std_dih(self, x):
-        self.std_dih = torch.nn.Parameter(torch.std(x[:, self.dih_indices], dim=0) + 1e-3, requires_grad=False)
+        std_dih = torch.std(x[:, self.dih_indices], dim=0) + 1e-3
+        self.register_buffer("std_dih", std_dih)
 
     def _validate_training_data(self, training_data):
         if training_data is None:
@@ -250,14 +251,34 @@ class InternalCoordinateTransform(nn.Module):
             raise ValueError("training_data must have n_samp > 1.")
 
     def _setup_indices(self, z_indices):
-        self.sorted_z_indices = topological_sort(z_indices)
-        modified_indices = [item[0] for item in self.sorted_z_indices]
-        self.modified_indices = []
-        for index in modified_indices:
-            self.modified_indices.extend(_indices_for_atom(index))
-        self.bond_indices = list(self.modified_indices[0::3])
-        self.angle_indices = list(self.modified_indices[1::3])
-        self.dih_indices = list(self.modified_indices[2::3])
+        n_atoms = self.dims // 3
+        ind_for_atom = torch.zeros(n_atoms, 3, dtype=torch.long)
+        for i in range(n_atoms):
+            ind_for_atom[i, 0] = 3 * i
+            ind_for_atom[i, 1] = 3 * i + 1
+            ind_for_atom[i, 2] = 3 * i + 2
+        self.register_buffer("inds_for_atom", ind_for_atom)
+
+        sorted_z_indices = topological_sort(z_indices)
+        sorted_z_indices = [
+            [item[0], item[1][0], item[1][1], item[1][2]] for item in sorted_z_indices
+        ]
+        rev_z_indices = list(reversed(sorted_z_indices))
+
+        mod = [item[0] for item in sorted_z_indices]
+        modified_indices = []
+        for index in mod:
+            modified_indices.extend(self.inds_for_atom[index])
+        bond_indices = list(modified_indices[0::3])
+        angle_indices = list(modified_indices[1::3])
+        dih_indices = list(modified_indices[2::3])
+
+        self.register_buffer("modified_indices", torch.LongTensor(modified_indices))
+        self.register_buffer("bond_indices", torch.LongTensor(bond_indices))
+        self.register_buffer("angle_indices", torch.LongTensor(angle_indices))
+        self.register_buffer("dih_indices", torch.LongTensor(dih_indices))
+        self.register_buffer("sorted_z_indices", torch.LongTensor(sorted_z_indices))
+        self.register_buffer("rev_z_indices", torch.LongTensor(rev_z_indices))
 
 
 def topological_sort(graph_unsorted):
