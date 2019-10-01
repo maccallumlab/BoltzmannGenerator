@@ -14,7 +14,7 @@ import time
 device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
 print("Loading trajectory")
-t = md.load("5ura_apo_solv_r9_p6t10_p5.dcd", top="5ura_apo_dry_r9_p6t10_p100.pdb")
+t = md.load("5ura_traj.dcd", top="5ura_start.pdb")
 ind = t.top.select("backbone and resid 20 to 40")
 t = t.atom_slice(ind)
 t.center_coordinates()

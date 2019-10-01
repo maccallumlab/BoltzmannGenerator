@@ -40,7 +40,7 @@ class CreateFC:
 #
 # Main script starts here
 #
-t = md.load("5ura_apo_solv_r9_p6t10_p5.dcd", top="5ura_apo_dry_r9_p6t10_p100.pdb")
+t = md.load("5ura_traj.dcd", top="5ura_start.pdb")
 
 # center everything
 t.center_coordinates()
