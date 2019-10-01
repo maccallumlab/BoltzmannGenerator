@@ -8,6 +8,10 @@ import mdtraj as md
 from tqdm import tqdm
 
 
+# USe CUDA if available.
+device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+
+
 class CreateFC:
     def __init__(self, n_hidden=None):
         self.n_hidden = n_hidden
@@ -57,7 +61,7 @@ training_data = t.xyz
 n_atoms = training_data.shape[1]
 n_dim = n_atoms * 3
 training_data_npy = training_data.reshape(-1, n_dim)
-training_data = torch.from_numpy(training_data_npy.astype("float32"))
+training_data = torch.as_tensor(training_data_npy, dtype=torch.float32)
 
 #
 # Build the network
@@ -72,7 +76,7 @@ mixed_nodes = mixed_transform.build_mixed_transformation_layers(
 )
 nodes.extend(mixed_nodes)
 
-n_glow = 8
+n_glow = 4
 for i in range(n_glow):
     nodes.append(Ff.Node(nodes[-1], Fm.PermuteRandom, {"seed": i}, name=f"permute_{i}"))
     nodes.append(
@@ -85,19 +89,24 @@ for i in range(n_glow):
     )
 nodes.append(Ff.OutputNode(nodes[-1], name="output"))
 net = Ff.ReversibleGraphNet(nodes, verbose=False)
+net = net.to(device=device)
 
+#
+# Training
+#
 losses = []
 val_losses = []
-epochs = 20
-n_batch = 128  # This is the number of data points per batch
+epochs = 200
+n_batch = 64  # This is the number of data points per batch
 
 n = training_data_npy.shape[0]
 n_val = n // 10
 np.random.shuffle(training_data_npy)
 
-val_data = torch.as_tensor(training_data_npy[:n_val, :])
-train_data = torch.as_tensor(training_data_npy[n_val:, :])
+val_data = torch.as_tensor(training_data_npy[:n_val, :], device=device)
+train_data = torch.as_tensor(training_data_npy[n_val:, :], device=device)
 I = np.arange(train_data.shape[0])  # A list of indices into the training set
+Ival = np.arange(val_data.shape[0])
 
 learning_rate = 1e-4
 optimizer = torch.optim.Adam(net.parameters(), lr=learning_rate)
@@ -121,9 +130,12 @@ with tqdm(range(epochs)) as progress:
         if epoch % 10 == 0:
             net.eval()
             with torch.no_grad():
-                z_val = net(val_data)
+                index_val = np.random.choice(Ival, n_batch, replace=True)
+                x_val = val_data[index_val, :]
+
+                z_val = net(x_val)
                 val_loss = (
-                    0.5 * torch.mean(z ** 2)
+                    0.5 * torch.mean(z_val ** 2)
                     - torch.mean(net.log_jacobian(run_forward=False)) / z_val.shape[1]
                 )
                 losses.append(loss.item())
@@ -134,9 +146,9 @@ with tqdm(range(epochs)) as progress:
                 )
 
 
-samples = torch.normal(0, 1, size=(128, z.shape[1]))
+samples = torch.normal(0, 1, size=(128, z.shape[1]), device=device)
 x = net(samples, rev=True)
-x = x.detach().numpy()
+x = x.cpu().detach().numpy()
 x = x.reshape(x.shape[0], -1, 3)
 t.unitcell_lengths = None
 t.unitcell_angles = None

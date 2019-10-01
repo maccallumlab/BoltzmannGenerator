@@ -96,7 +96,7 @@ class InternalCoordinateTransform(nn.Module):
 
     def forward(self, x, rev=False):
         x = x[0]
-        self.jac = torch.zeros(x.shape[0])
+        self.jac = x.new_zeros(x.shape[0])
 
         if rev:
             trans = x
@@ -204,21 +204,21 @@ class InternalCoordinateTransform(nn.Module):
         return x
 
     def _setup_mean_bonds(self, x):
-        self.mean_bonds = torch.mean(x[:, self.bond_indices], dim=0)
+        self.mean_bonds = torch.nn.Parameter(torch.mean(x[:, self.bond_indices], dim=0), requires_grad=False)
 
     def _setup_std_bonds(self, x):
-        self.std_bonds = torch.std(x[:, self.bond_indices], dim=0) + 1e-3
+        self.std_bonds = torch.nn.Parameter(torch.std(x[:, self.bond_indices], dim=0) + 1e-3, requires_grad=False)
 
     def _setup_mean_angles(self, x):
-        self.mean_angles = torch.mean(x[:, self.angle_indices], dim=0)
+        self.mean_angles = torch.nn.Parameter(torch.mean(x[:, self.angle_indices], dim=0), requires_grad=False)
 
     def _setup_std_angles(self, x):
-        self.std_angles = torch.std(x[:, self.angle_indices], dim=0) + 1e-3
+        self.std_angles = torch.nn.Parameter(torch.std(x[:, self.angle_indices], dim=0) + 1e-3, requires_grad=False)
 
     def _setup_mean_dih(self, x):
         sin = torch.mean(torch.sin(x[:, self.dih_indices]), dim=0)
         cos = torch.mean(torch.cos(x[:, self.dih_indices]), dim=0)
-        self.mean_dih = torch.atan2(sin, cos)
+        self.mean_dih = torch.nn.Parameter(torch.atan2(sin, cos), requires_grad=False)
 
     def _fix_dih(self, x):
         dih = x[:, self.dih_indices]
@@ -227,7 +227,7 @@ class InternalCoordinateTransform(nn.Module):
         x[:, self.dih_indices] = dih
 
     def _setup_std_dih(self, x):
-        self.std_dih = torch.std(x[:, self.dih_indices], dim=0) + 1e-3
+        self.std_dih = torch.nn.Parameter(torch.std(x[:, self.dih_indices], dim=0) + 1e-3, requires_grad=False)
 
     def _validate_training_data(self, training_data):
         if training_data is None:
