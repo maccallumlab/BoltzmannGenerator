@@ -54,7 +54,7 @@ ind = t.top.select("backbone")
 t.superpose(t, 0, atom_indices=ind, ref_atom_indices=ind)
 
 # save input coordinates for reference
-# t.save("in.pdb")
+t[::10].save("in.pdb")
 
 # Gather the training data into a pytorch Tensor with the right shape
 training_data = t.xyz
@@ -76,7 +76,7 @@ mixed_nodes = mixed_transform.build_mixed_transformation_layers(
 )
 nodes.extend(mixed_nodes)
 
-n_glow = 4
+n_glow = 8
 for i in range(n_glow):
     nodes.append(Ff.Node(nodes[-1], Fm.PermuteRandom, {"seed": i}, name=f"permute_{i}"))
     nodes.append(
@@ -96,7 +96,7 @@ net = net.to(device=device)
 #
 losses = []
 val_losses = []
-epochs = 10_000
+epochs = 100_000
 n_batch = 64  # This is the number of data points per batch
 
 n = training_data_npy.shape[0]
@@ -115,7 +115,7 @@ Ival = np.arange(val_data.shape[0])
 
 learning_rate = 1e-4
 optimizer = torch.optim.Adam(net.parameters(), lr=learning_rate)
-scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=40)
+scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=40, verbose=True)
 
 with tqdm(range(epochs)) as progress:
     for epoch in progress:
