@@ -103,8 +103,12 @@ n = training_data_npy.shape[0]
 n_val = n // 10
 np.random.shuffle(training_data_npy)
 
-val_data = torch.as_tensor(training_data_npy[:n_val, :], device=device, dtype=torch.float32)
-train_data = torch.as_tensor(training_data_npy[n_val:, :], device=device, dtype=torch.float32)
+val_data = torch.as_tensor(
+    training_data_npy[:n_val, :], device=device, dtype=torch.float32
+)
+train_data = torch.as_tensor(
+    training_data_npy[n_val:, :], device=device, dtype=torch.float32
+)
 
 I = np.arange(train_data.shape[0])  # A list of indices into the training set
 Ival = np.arange(val_data.shape[0])
@@ -121,9 +125,9 @@ with tqdm(range(epochs)) as progress:
 
         z = net(x_batch)
 
-        loss = 0.5 * torch.mean(z ** 2) - torch.mean(
-            net.log_jacobian(run_forward=False) / z.shape[1]
-        )
+        loss = (
+            0.5 * torch.mean(z ** 2) - torch.mean(net.log_jacobian(run_forward=False))
+        ) / z.shape[1]
 
         optimizer.zero_grad()
         loss.backward()
@@ -138,10 +142,8 @@ with tqdm(range(epochs)) as progress:
                 z_val = net(x_val)
                 val_loss = (
                     0.5 * torch.mean(z_val ** 2)
-                    - torch.mean(net.log_jacobian(run_forward=False)) / z_val.shape[1]
-                )
-                scheduler.step(val_loss)
-
+                    - torch.mean(net.log_jacobian(run_forward=False))
+                ) / z_val.shape[1]
                 losses.append(loss.item())
                 val_losses.append(val_loss.item())
 

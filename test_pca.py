@@ -54,9 +54,7 @@ class CreateFC:
         torch.nn.init.zeros_(lin4.weight)
         torch.nn.init.zeros_(lin4.bias)
 
-        return nn.Sequential(
-            lin1, nn.ReLU(), lin2, nn.ReLU(), lin3, nn.ReLU(), lin4
-        )
+        return nn.Sequential(lin1, nn.ReLU(), lin2, nn.ReLU(), lin3, nn.ReLU(), lin4)
 
 
 # Build the network
@@ -93,7 +91,9 @@ I = np.arange(train_data.shape[0])  # A list of indices into the training set
 
 learning_rate = 1e-4
 optimizer = torch.optim.Adam(net.parameters(), lr=learning_rate)
-scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=50, verbose=True)
+scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+    optimizer, patience=50, verbose=True
+)
 
 with tqdm(range(epochs)) as progress:
     for epoch in progress:
@@ -103,9 +103,9 @@ with tqdm(range(epochs)) as progress:
 
         z = net(x_batch)
 
-        loss = 0.5 * torch.mean(z ** 2) - torch.mean(
-            net.log_jacobian(run_forward=False) / z.shape[1]
-        )
+        loss = (
+            0.5 * torch.mean(z ** 2) - torch.mean(net.log_jacobian(run_forward=False))
+        ) / z.shape[1]
 
         optimizer.zero_grad()
         loss.backward()
@@ -117,8 +117,8 @@ with tqdm(range(epochs)) as progress:
                 z_val = net(val_data)
                 val_loss = (
                     0.5 * torch.mean(z ** 2)
-                    - torch.mean(net.log_jacobian(run_forward=False)) / z_val.shape[1]
-                )
+                    - torch.mean(net.log_jacobian(run_forward=False))
+                ) / z_val.shape[1]
                 losses.append(loss.item())
                 val_losses.append(val_loss.item())
                 scheduler.step(val_loss.item())
