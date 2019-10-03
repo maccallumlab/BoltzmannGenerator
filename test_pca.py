@@ -8,7 +8,9 @@ import mdtraj as md
 from tqdm import tqdm
 from matplotlib import pyplot as pp
 import time
+from torch.utils.tensorboard import SummaryWriter
 
+writer = SummaryWriter()
 
 # Use the GPU if available
 device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
@@ -54,20 +56,34 @@ class CreateFC:
         torch.nn.init.zeros_(lin4.weight)
         torch.nn.init.zeros_(lin4.bias)
 
-        return nn.Sequential(lin1, nn.ReLU(), lin2, nn.ReLU(), lin3, nn.ReLU(), lin4)
+        return nn.Sequential(
+            lin1,
+            nn.ReLU(),
+            nn.Dropout(),
+            nn.BatchNorm1d(hidden),
+            lin2,
+            nn.ReLU(),
+            nn.Dropout(),
+            nn.BatchNorm1d(hidden),
+            lin3,
+            nn.ReLU(),
+            nn.Dropout(),
+            nn.BatchNorm1d(hidden),
+            lin4,
+        )
 
 
 # Build the network
 nodes = [Ff.InputNode(n_dim, name="input")]
 nodes.append(Ff.Node(nodes[-1], pca.PCA, {"training_data": training_data}, name="pca"))
-n_glow = 16
+n_glow = 8
 for i in range(n_glow):
     nodes.append(Ff.Node(nodes[-1], Fm.PermuteRandom, {"seed": i}, name=f"permute_{i}"))
     nodes.append(
         Ff.Node(
             nodes[-1],
             Fm.GLOWCouplingBlock,
-            {"subnet_constructor": CreateFC(1024), "clamp": 2},
+            {"subnet_constructor": CreateFC(128), "clamp": 2},
             name=f"glow_{i}",
         )
     )
@@ -78,7 +94,7 @@ net = net.to(device=device)
 
 losses = []
 val_losses = []
-epochs = 20_000
+epochs = 5000
 n_batch = 128  # This is the number of data points per batch
 
 n = training_data_npy.shape[0]
@@ -89,10 +105,10 @@ val_data = torch.as_tensor(training_data_npy[:n_val, :], device=device)
 train_data = torch.as_tensor(training_data_npy[n_val:, :], device=device)
 I = np.arange(train_data.shape[0])  # A list of indices into the training set
 
-learning_rate = 1e-4
+learning_rate = 1e-3
 optimizer = torch.optim.Adam(net.parameters(), lr=learning_rate)
 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-    optimizer, patience=50, verbose=True
+    optimizer, patience=100, verbose=True
 )
 
 with tqdm(range(epochs)) as progress:
@@ -103,8 +119,10 @@ with tqdm(range(epochs)) as progress:
 
         z = net(x_batch)
 
+        jac = net.log_jacobian(run_forward=False)
         loss = (
-            0.5 * torch.mean(z ** 2) - torch.mean(net.log_jacobian(run_forward=False))
+            0.5 * torch.mean(torch.sum(z ** 2, dim=1))
+            - torch.mean(net.log_jacobian(run_forward=False))
         ) / z.shape[1]
 
         optimizer.zero_grad()
@@ -116,11 +134,14 @@ with tqdm(range(epochs)) as progress:
             with torch.no_grad():
                 z_val = net(val_data)
                 val_loss = (
-                    0.5 * torch.mean(z ** 2)
+                    0.5 * torch.mean(torch.sum(z_val ** 2, dim=1))
                     - torch.mean(net.log_jacobian(run_forward=False))
                 ) / z_val.shape[1]
                 losses.append(loss.item())
                 val_losses.append(val_loss.item())
+
+                writer.add_scalar("Loss/train", loss.item(), epoch)
+                writer.add_scalar("Loss/validation", val_loss.item(), epoch)
                 scheduler.step(val_loss.item())
 
                 progress.set_postfix(

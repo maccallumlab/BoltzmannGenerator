@@ -1,15 +1,27 @@
 import torch
 import torch.nn as nn
+from torch.utils.tensorboard import SummaryWriter
 import FrEIA.framework as Ff
 import FrEIA.modules as Fm
 import mixed_transform
 import numpy as np
 import mdtraj as md
 from tqdm import tqdm
+import argparse
+import math
 
+parser = argparse.ArgumentParser()
+parser.add_argument("--batch_size", type=int, default=64)
+parser.add_argument("--iterations", type=int, default=1000)
+args = parser.parse_args()
 
 # USe CUDA if available.
-device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+if torch.cuda.is_available():
+    device = torch.device("cuda")
+    print("Using cuda")
+else:
+    device = torch.device("cpu")
+    print("Using cpu")
 
 
 class CreateFC:
@@ -38,14 +50,28 @@ class CreateFC:
         torch.nn.init.zeros_(lin4.weight)
         torch.nn.init.zeros_(lin4.bias)
 
-        return nn.Sequential(lin1, nn.ReLU(), lin2, nn.ReLU(), lin3, nn.ReLU(), lin4)
+        return nn.Sequential(
+            lin1,
+            nn.ReLU(),
+            nn.Dropout(),
+            nn.BatchNorm1d(hidden),
+            lin2,
+            nn.ReLU(),
+            nn.Dropout(),
+            nn.BatchNorm1d(hidden),
+            lin3,
+            nn.ReLU(),
+            lin4,
+        )
 
 
 #
 # Main script starts here
 #
+print("Loading trajectory")
 t = md.load("5ura_traj.dcd", top="5ura_start.pdb")
 
+print("Processing trajectory")
 # center everything
 t.center_coordinates()
 
@@ -53,6 +79,7 @@ t.center_coordinates()
 ind = t.top.select("backbone")
 t.superpose(t, 0, atom_indices=ind, ref_atom_indices=ind)
 
+print("Saving processed trajectory")
 # save input coordinates for reference
 t[::10].save("in.pdb")
 
@@ -66,6 +93,7 @@ training_data = torch.as_tensor(training_data_npy, dtype=torch.float32)
 #
 # Build the network
 #
+print("Building network")
 
 # First create the input node
 nodes = [Ff.InputNode(n_dim, name="input")]
@@ -91,13 +119,16 @@ nodes.append(Ff.OutputNode(nodes[-1], name="output"))
 net = Ff.ReversibleGraphNet(nodes, verbose=False)
 net = net.to(device=device)
 
+print("Training")
 #
 # Training
 #
 losses = []
 val_losses = []
-epochs = 100_000
-n_batch = 64  # This is the number of data points per batch
+epochs = args.iterations
+n_batch = args.batch_size
+
+writer = SummaryWriter()
 
 n = training_data_npy.shape[0]
 n_val = n // 10
@@ -113,9 +144,11 @@ train_data = torch.as_tensor(
 I = np.arange(train_data.shape[0])  # A list of indices into the training set
 Ival = np.arange(val_data.shape[0])
 
-learning_rate = 1e-4
+learning_rate = 1e-3
 optimizer = torch.optim.Adam(net.parameters(), lr=learning_rate)
-scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=40, verbose=True)
+scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+    optimizer, patience=40, verbose=True
+)
 
 with tqdm(range(epochs)) as progress:
     for epoch in progress:
@@ -144,8 +177,20 @@ with tqdm(range(epochs)) as progress:
                     0.5 * torch.mean(z_val ** 2)
                     - torch.mean(net.log_jacobian(run_forward=False))
                 ) / z_val.shape[1]
+
                 losses.append(loss.item())
                 val_losses.append(val_loss.item())
+
+                writer.add_scalar("Loss/train", loss.item(), epoch)
+                writer.add_scalar("Loss/validation", val_loss.item(), epoch)
+                writer.add_scalars(
+                    "learning_rates",
+                    {
+                        str(i): math.log(group["lr"], 10)
+                        for i, group in enumerate(optimizer.param_groups)
+                    },
+                    epoch,
+                )
 
                 progress.set_postfix(
                     loss=f"{loss.item():8.3f}", val_loss=f"{val_loss.item():8.3f}"
