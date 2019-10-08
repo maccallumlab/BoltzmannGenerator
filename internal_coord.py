@@ -133,14 +133,6 @@ class InternalCoordinateTransform(nn.Module):
         self.jac = x.new_zeros(x.shape[0])
 
         if rev:
-            # trans = x
-            # trans[:, self.bond_indices] *= self.std_bonds
-            # trans[:, self.bond_indices] += self.mean_bonds
-            # trans[:, self.angle_indices] *= self.std_angles
-            # trans[:, self.angle_indices] += self.mean_angles
-            # trans[:, self.dih_indices] *= self.std_dih
-            # trans[:, self.dih_indices] += self.mean_dih
-            # self._fix_dih(trans)
             trans = self._rev(x)
         else:
             trans = self._fwd(x)
@@ -308,7 +300,7 @@ class InternalCoordinateTransform(nn.Module):
         self.register_buffer("mean_angles", mean_angles)
 
     def _setup_std_angles(self, x):
-        std_angles = torch.std(x[:, self.angle_indices], dim=0) + 1e-3
+        std_angles = torch.std(x[:, self.angle_indices], dim=0)
         self.register_buffer("std_angles", std_angles)
 
     def _setup_mean_dih(self, x):
@@ -319,13 +311,13 @@ class InternalCoordinateTransform(nn.Module):
 
     def _fix_dih(self, x):
         dih = x[:, self.dih_indices]
-        dih = torch.where(dih < math.pi, dih + 2 * math.pi, dih)
+        dih = torch.where(dih < -math.pi, dih + 2 * math.pi, dih)
         dih = torch.where(dih > math.pi, dih - 2 * math.pi, dih)
-        x = x.clone()
         x[:, self.dih_indices] = dih
 
     def _setup_std_dih(self, x):
-        std_dih = torch.std(x[:, self.dih_indices], dim=0) + 1e-3
+        std_dih = torch.std(x[:, self.dih_indices], dim=0)
+        std_dih = torch.ones_like(std_dih)
         self.register_buffer("std_dih", std_dih)
 
     def _validate_training_data(self, training_data):

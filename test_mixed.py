@@ -158,9 +158,8 @@ with tqdm(range(epochs)) as progress:
 
         z = net(x_batch)
 
-        loss = (
-            0.5 * torch.mean(z ** 2) - torch.mean(net.log_jacobian(run_forward=False))
-        ) / z.shape[1]
+        loss = 0.5 * torch.mean(torch.sum(z ** 2, dim=1)) - torch.mean(net.log_jacobian(run_forward=False))
+        
 
         optimizer.zero_grad()
         loss.backward()
@@ -173,10 +172,8 @@ with tqdm(range(epochs)) as progress:
                 x_val = val_data[index_val, :]
 
                 z_val = net(x_val)
-                val_loss = (
-                    0.5 * torch.mean(z_val ** 2)
-                    - torch.mean(net.log_jacobian(run_forward=False))
-                ) / z_val.shape[1]
+
+                val_loss = 0.5 * torch.mean(torch.sum(z_val ** 2, dim=1)) - torch.mean(net.log_jacobian(run_forward=False))
 
                 losses.append(loss.item())
                 val_losses.append(val_loss.item())
