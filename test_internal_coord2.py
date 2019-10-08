@@ -13,7 +13,7 @@ import matplotlib
 matplotlib.use("Qt4Agg")
 pp.ion()
 
-t   = md.load("5ura_traj.dcd",top="5ura_start.pdb")
+t = md.load("5ura_traj.dcd", top="5ura_start.pdb")
 ind = t.top.select("backbone")
 t = t.atom_slice(ind)
 t.center_coordinates()
@@ -57,9 +57,7 @@ class CreateFC:
         torch.nn.init.zeros_(lin4.weight)
         torch.nn.init.zeros_(lin4.bias)
 
-        return nn.Sequential(
-            lin1, nn.ReLU(), lin2, nn.ReLU(), lin3, nn.ReLU(), lin4
-        )
+        return nn.Sequential(lin1, nn.ReLU(), lin2, nn.ReLU(), lin3, nn.ReLU(), lin4)
 
 
 # Build the network
@@ -67,7 +65,7 @@ nodes = [Ff.InputNode(n_dim, name="input")]
 ic_node = Ff.Node(
     nodes[-1],
     internal_coord.InternalCoordinateTransform,
-    {"training_data": training_data, "z_indices": graph},
+    {"training_data": training_data, "z_indices": graph, "cart_indices": [0, 1, 2]},
     name="internal",
 )
 split_node = Ff.Node(
@@ -133,9 +131,8 @@ with tqdm(range(epochs)) as progress:
 
         z = net(x_batch)
 
-
-        loss = 0.5 * torch.mean(z ** 2) - torch.mean(
-            net.log_jacobian(run_forward=False) / z.shape[1]
+        loss = 0.5 * torch.mean(torch.sum(z ** 2, axis=1)) - torch.mean(
+            net.log_jacobian(run_forward=False)
         )
 
         optimizer.zero_grad()
@@ -146,9 +143,8 @@ with tqdm(range(epochs)) as progress:
             net.eval()
             with torch.no_grad():
                 z_val = net(val_data)
-                val_loss = (
-                    0.5 * torch.mean(z ** 2)
-                    - torch.mean(net.log_jacobian(run_forward=False)) / z_val.shape[1]
+                val_loss = 0.5 * torch.mean(torch.sum(z_val ** 2, axis=1)) - torch.mean(
+                    net.log_jacobian(run_forward=False)
                 )
                 losses.append(loss.item())
                 val_losses.append(val_loss.item())

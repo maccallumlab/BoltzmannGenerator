@@ -56,5 +56,12 @@ with torch.no_grad():
     x_prime = net(z_samples, rev=True)
     x_jac = net.log_jacobian(run_forward=False, rev=True)
 
+x_out = x_prime.detach().numpy()
+x_out = x_out.reshape(x_out.shape[0], -1, 3)
+t.unitcell_lengths = None
+t.unitcell_angles = None
+t.xyz = x_out
+t.save("out.pdb")
+
 assert torch.allclose(z_jac, -1 * x_jac, atol=0.1), "Jacobians in forward and reverse directions do not match"
 assert torch.allclose(x_prime, x, atol=1e-3), "Coordinates do not match"

@@ -40,7 +40,7 @@ def build_mixed_transformation_layers(
     ic_node = Ff.Node(
         input_node,
         InternalCoordinateTransform,
-        {"training_data": training_data, "z_indices": Z},
+        {"training_data": training_data, "z_indices": Z, "cart_indices": cart_indices},
         name="internal",
     )
 

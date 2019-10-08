@@ -6,13 +6,13 @@ import internal_coord
 import numpy as np
 import math
 
-z_indices = [(3, [2, 1, 0]), (4, [3, 2, 1])]
+z_indices = [(3, [2, 1, 0]), (4, [2, 1, 0]), (5, [3, 2, 1])]
 
 coords = np.array(
     [
-        # 1111111111111   2222222222222  3333333333333  4444444444444  5555555555555
-        [-1.0, 1.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0],
-        [-1.0, 1.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0],
+        # 0000000000000   1111111111111  2222222222222  3333333333333  4444444444444  5555555555555
+        [-1.0, 1.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0],
+        [-1.0, 1.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0],
     ],
     dtype="float32",
 )
@@ -24,7 +24,7 @@ nodes.append(
     Ff.Node(
         nodes[-1],
         internal_coord.InternalCoordinateTransform,
-        {"training_data": coords, "z_indices": z_indices},
+        {"training_data": coords, "z_indices": z_indices, "cart_indices": [0, 1, 2]},
         name="internal",
     )
 )
@@ -34,8 +34,8 @@ net = Ff.ReversibleGraphNet(nodes, verbose=False)
 z = net(coords)
 jac_f = net.log_jacobian(run_forward=False)
 
-# We should only change the last 6 coordinates
-assert torch.allclose(coords[:, :-6], z[:, :-6])
+# We should only change the last 9 coordinates
+assert torch.allclose(coords[:, :-9], z[:, :-9])
 
 # We should be able to undo the transformation
 x = net(z, rev=True)

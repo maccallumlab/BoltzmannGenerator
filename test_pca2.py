@@ -26,9 +26,13 @@ net = Ff.ReversibleGraphNet(nodes, verbose=False)
 # Pass the training data through the network, then reverse it.
 x = training_data
 z = net(training_data)
-print(net.log_jacobian(run_forward=False))
+x_jac = net.log_jacobian(run_forward=False)
+
 x_prime = net(z, rev=True)
-print(net.log_jacobian(run_forward=False, rev=True))
+z_jac = net.log_jacobian(run_forward=False, rev=True)
 
 t.xyz = x_prime.detach().numpy().reshape(x_prime.shape[0], -1, 3)
 t.save("out.pdb")
+
+assert torch.allclose(z_jac, -1 * x_jac, atol=0.1), "Jacobians in forward and reverse directions do not match"
+assert torch.allclose(x_prime, x, atol=1e-3), "Coordinates do not match"
