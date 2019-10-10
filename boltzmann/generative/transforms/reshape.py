@@ -1,7 +1,7 @@
 import torch
 
-import utils
-from nde import transforms
+from ... import utils
+from .. import transforms
 
 
 class SqueezeTransform(transforms.Transform):

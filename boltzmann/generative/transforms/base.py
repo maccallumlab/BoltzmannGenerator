@@ -5,7 +5,8 @@ import torch
 
 from torch import nn
 
-import utils
+from ... import utils
+
 
 
 class InverseNotAvailable(Exception):

@@ -1,7 +1,7 @@
 """Implementations of some standard transforms."""
 
 import torch
-from nde import transforms
+from .. import transforms
 
 
 class IdentityTransform(transforms.Transform):

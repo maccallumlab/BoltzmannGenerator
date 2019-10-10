@@ -6,10 +6,10 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-import utils
+from ... import utils
 
-from nde import transforms
-from nde.transforms import splines
+from .. import transforms
+from . import splines
 
 class Tanh(transforms.Transform):
     def forward(self, inputs, context=None):

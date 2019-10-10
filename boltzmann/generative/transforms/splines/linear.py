@@ -4,8 +4,8 @@ import torch
 from torch.nn import functional as F
 import numpy as np
 
-import utils
-from nde import transforms
+from .... import utils
+from ... import transforms
 
 def unconstrained_linear_spline(inputs, unnormalized_pdf,
                                 inverse=False,

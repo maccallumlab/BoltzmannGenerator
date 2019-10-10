@@ -1,5 +1,5 @@
-import utils
-from nde import transforms
+from ... import utils
+from .. import transforms
 
 
 class OneByOneConvolution(transforms.LULinear):

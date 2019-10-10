@@ -4,9 +4,9 @@ import torch
 
 from torch import nn
 
-import utils
+from ... import utils
 
-from nde import transforms
+from .. import transforms
 
 
 class HouseholderSequence(transforms.Transform):

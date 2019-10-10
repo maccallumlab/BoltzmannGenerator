@@ -1,10 +1,10 @@
 import torch
 from torch.nn import functional as F
 
-import utils
+from .... import utils
 import numpy as np
 
-from nde import transforms
+from ... import transforms
 
 DEFAULT_MIN_BIN_WIDTH = 1e-3
 DEFAULT_MIN_BIN_HEIGHT = 1e-3

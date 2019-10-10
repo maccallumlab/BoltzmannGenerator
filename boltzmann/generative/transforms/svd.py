@@ -4,8 +4,8 @@ import torch
 from torch import nn
 from torch.nn import init
 
-from nde import transforms
-from nde.transforms.linear import Linear
+from .. import transforms
+from .linear import Linear
 
 
 class SVDLinear(Linear):
