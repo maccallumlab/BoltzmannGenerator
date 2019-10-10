@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
-import FrEIA.framework as Ff
-import FrEIA.modules as Fm
+from ..generative import transforms
 import math
 
 
@@ -97,23 +96,16 @@ def reconstruct_cart(cart, ref_atoms, bonds, angles, dihs):
     return new_cart, jac
 
 
-class InternalCoordinateTransform(nn.Module):
-    def __init__(self, dims_in, z_indices=None, cart_indices=None, training_data=None):
+class InternalCoordinateTransform(transforms.Transform):
+    def __init__(self, dims, z_indices=None, cart_indices=None, training_data=None):
         super().__init__()
-
-        # do some sanity checks on our input connections
-        assert len(dims_in) == 1, "InternalCoordinateTransform can only use one input"
-        assert (
-            len(dims_in[0]) == 1
-        ), "InternalCoordinateTransform can only use one input channel"
-        self.dims = dims_in[0][0]
-        self.jac = None
-
+        self.dims = dims
         with torch.no_grad():
+            # Setup indexing.
             self._setup_indices(z_indices, cart_indices)
             self._validate_training_data(training_data)
-            self.jac = torch.zeros(training_data.shape[0])
-            transformed = self._fwd(training_data)
+            # Setup the mean and standard deviations for each internal coordinate.
+            transformed, _ = self._fwd(training_data)
             self._setup_mean_bonds(transformed)
             transformed[:, self.bond_indices] -= self.mean_bonds
             self._setup_std_bonds(transformed)
@@ -128,37 +120,16 @@ class InternalCoordinateTransform(nn.Module):
             self._setup_std_dih(transformed)
             transformed[:, self.dih_indices] /= self.std_dih
 
-    def forward(self, x, rev=False):
-        x = x[0]
-        self.jac = x.new_zeros(x.shape[0])
-
-        if rev:
-            trans = self._rev(x)
-        else:
-            trans = self._fwd(x)
-            trans[:, self.bond_indices] -= self.mean_bonds
-            trans[:, self.bond_indices] /= self.std_bonds
-            trans[:, self.angle_indices] -= self.mean_angles
-            trans[:, self.angle_indices] /= self.std_angles
-            trans[:, self.dih_indices] -= self.mean_dih
-            self._fix_dih(trans)
-            trans[:, self.dih_indices] /= self.std_dih
-        return [trans]
-
-    def jacobian(self, x, rev=False):
-        if rev:
-            return -1 * self.jac
-        else:
-            return self.jac
-
-    def output_dims(self, input_dims):
-        assert (
-            len(input_dims) == 1
-        ), "InternalCoordinateTransform can only use one input"
-        assert (
-            len(input_dims[0]) == 1
-        ), "InternalCoordinateTransform can only use one input channel"
-        return input_dims
+    def forward(self, x):
+        trans, jac = self._fwd(x)
+        trans[:, self.bond_indices] -= self.mean_bonds
+        trans[:, self.bond_indices] /= self.std_bonds
+        trans[:, self.angle_indices] -= self.mean_angles
+        trans[:, self.angle_indices] /= self.std_angles
+        trans[:, self.dih_indices] -= self.mean_dih
+        self._fix_dih(trans)
+        trans[:, self.dih_indices] /= self.std_dih
+        return trans, jac
 
     def _fwd(self, x):
         x = x.clone()
@@ -176,18 +147,20 @@ class InternalCoordinateTransform(nn.Module):
         jac = 2 * torch.sum(
             torch.log(bonds) + torch.log(torch.abs(torch.sin(angles))), dim=1
         )
-        self.jac += jac
 
         # Replace the cartesian coordinates with internal coordinates.
         x[:, inds4[:, 0]] = bonds
         x[:, inds4[:, 1]] = angles
         x[:, inds4[:, 2]] = dihedrals
-        return x
+        return x, jac
 
-    def _rev(self, x):
+    def inverse(self, x):
         # Gather all of the atoms represented as cartesisan coordinates.
         n_batch = x.shape[0]
         cart = x[:, self.init_cart_indices].view(n_batch, -1, 3)
+
+        # Setup the log abs det jacobian
+        jac = x.new_zeros(x.shape[0])
 
         # Loop over all of the blocks, where all of the atoms in each block
         # can be built in parallel because they only depend on atoms that
@@ -225,8 +198,8 @@ class InternalCoordinateTransform(nn.Module):
             dihs = torch.where(dihs > math.pi, dihs - 2 * math.pi, dihs)
 
             # Compute the cartesian coordinates for the newly placed atoms.
-            new_cart, jac = reconstruct_cart(cart, ref_atoms, bonds, angles, dihs)
-            self.jac += jac
+            new_cart, cart_jac = reconstruct_cart(cart, ref_atoms, bonds, angles, dihs)
+            jac = jac - cart_jac
 
             # Concatenate the cartesian coordinates for the newly placed
             # atoms onto the full set of cartesian coordiantes.
@@ -234,58 +207,7 @@ class InternalCoordinateTransform(nn.Module):
         # Permute cart back into the original order and flatten.
         cart = cart[:, self.rev_perm_inv]
         cart = cart.view(n_batch, -1)
-        return cart
-
-    def _rev_old(self, x):
-        # x = x.clone()
-        for ind4, ind1, ind2, ind3 in self.sorted_z_indices:
-            # Get the cartesian indices for these atoms.
-            inds1 = self.inds_for_atom[ind1, :].unsqueeze(0)
-            inds2 = self.inds_for_atom[ind2, :].unsqueeze(0)
-            inds3 = self.inds_for_atom[ind3, :].unsqueeze(0)
-            inds4 = self.inds_for_atom[ind4, :].unsqueeze(0)
-
-            # Get the positions of the 4 reconstructing atoms
-            p1 = x[:, inds1]
-            p2 = x[:, inds2]
-            p3 = x[:, inds3]
-
-            # Get the distance, angle, and torsion
-            d14 = x[:, inds4[:, 0]].unsqueeze(2)
-            a124 = x[:, inds4[:, 1]].unsqueeze(2)
-            t1234 = x[:, inds4[:, 2]].unsqueeze(2)
-
-            jac = 2 * torch.sum(
-                torch.log(d14.squeeze(2))
-                + torch.log(torch.abs(torch.sin(a124.squeeze(2)))),
-                dim=1,
-            )
-            self.jac = self.jac + jac
-
-            # Reconstruct the position of p4
-            v1 = p1 - p2
-            v2 = p1 - p3
-
-            n = torch.cross(v1, v2, dim=2)
-            n = n / torch.norm(n, dim=2, keepdim=True)
-            nn = torch.cross(v1, n, dim=2)
-            nn = nn / torch.norm(nn, dim=2, keepdim=True)
-
-            n = n * torch.sin(t1234)
-            nn = nn * torch.cos(t1234)
-
-            v3 = n + nn
-            v3 = v3 / torch.norm(v3, dim=2, keepdim=True)
-            v3 = v3 * d14 * torch.sin(a124)
-
-            v1 = v1 / torch.norm(v1, dim=2, keepdim=True)
-            v1 = v1 * d14 * torch.cos(a124)
-
-            # Store the final position in x
-            position = p1 + v3 - v1
-            x = x.clone()
-            x[:, inds4] = position
-        return x
+        return cart, jac
 
     def _setup_mean_bonds(self, x):
         mean_bonds = torch.mean(x[:, self.bond_indices], dim=0)
@@ -300,7 +222,7 @@ class InternalCoordinateTransform(nn.Module):
         self.register_buffer("mean_angles", mean_angles)
 
     def _setup_std_angles(self, x):
-        std_angles = torch.std(x[:, self.angle_indices], dim=0)
+        std_angles = torch.std(x[:, self.angle_indices], dim=0) + 1e-3
         self.register_buffer("std_angles", std_angles)
 
     def _setup_mean_dih(self, x):
