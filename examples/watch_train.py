@@ -96,7 +96,7 @@ net = transforms.CompositeTransform(layers).to(device)
 
 losses = []
 val_losses = []
-epochs = 2500
+epochs = 10000
 n_batch = 1024  # This is the number of data points per batch
 
 n = training_data_npy.shape[0]
@@ -109,9 +109,14 @@ I = np.arange(train_data.shape[0])  # A list of indices into the training set
 
 learning_rate = 1e-3
 optimizer = torch.optim.Adam(net.parameters(), lr=learning_rate, weight_decay=1e-2)
-scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-    optimizer, patience=30, verbose=True
-)
+# scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs, 1e-8)
+scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=40, min_lr=1e-8, verbose=True)
+
+# We're going choose a random latent vector and see what it transforms to
+# as we train the network.
+
+trained_coords = []
+z_fixed = torch.normal(0, 1, size=(1, n_dim - 6), device=device)
 
 with tqdm(range(epochs)) as progress:
     for epoch in progress:
@@ -119,12 +124,14 @@ with tqdm(range(epochs)) as progress:
         optimizer.zero_grad()
         index_batch = np.random.choice(I, n_batch, replace=True)
         x_batch = train_data[index_batch, :]
+        x_batch = x_batch + torch.normal(0, 1e-3, size=x_batch.shape, device=x_batch.device)
 
         z, jac = net.forward(x_batch)
 
         loss = 0.5 * torch.mean(torch.sum(z ** 2, dim=1)) - torch.mean(jac)
         loss.backward()
         optimizer.step()
+        # scheduler.step(epoch)
 
         if epoch % 10 == 0:
             net.eval()
@@ -141,13 +148,12 @@ with tqdm(range(epochs)) as progress:
                     loss=f"{loss.item():8.3f}", val_loss=f"{val_loss.item():8.3f}"
                 )
 
-print("Generating samples from model")
-with torch.no_grad():
-    samples = torch.normal(0, 1, size=(128, z.shape[1]), device=device)
-    x, _ = net.inverse(samples)
-    x = x.cpu().detach().numpy()
-x = x.reshape(x.shape[0], -1, 3)
+                x_fixed, _ = net.inverse(z_fixed)
+                trained_coords.append(x_fixed.cpu().detach().numpy())
+
+trained_coords = np.array(trained_coords)
+trained_coords = trained_coords.reshape(trained_coords.shape[0], -1, 3)
 t.unitcell_lengths = None
 t.unitcell_angles = None
-t.xyz = x
+t.xyz = trained_coords
 t.save("out.pdb")
