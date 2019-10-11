@@ -12,7 +12,7 @@ import time
 device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
 print("Loading trajectory")
-t = md.load("../data/AAAA_noconstraints.dcd", top="../data/AAAA.pdb")
+t = md.load("../data/AIYFL.dcd", top="../data/AIYFL.pdb")
 t.center_coordinates()
 t.superpose(t, 0)
 training_data = t.xyz
@@ -25,7 +25,7 @@ print("Data has size:", training_data.shape)
 
 # Build the network
 N_COUPLING = 4
-AFFINE_LAYER = False
+AFFINE_LAYER = True
 layers = []
 layers.append(protein.PCATransform(n_dim, training_data))
 for _ in range(N_COUPLING):
