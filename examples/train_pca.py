@@ -12,7 +12,7 @@ import time
 device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
 print("Loading trajectory")
-t = md.load("../data/AAAA_noconstraints.dcd", top="../data/AAAA.pdb")
+t = md.load("../data/AIYFL.dcd", top="../data/AIYFL.pdb")
 t.center_coordinates()
 t.superpose(t, 0)
 training_data = t.xyz

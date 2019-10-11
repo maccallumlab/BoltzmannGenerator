@@ -4,7 +4,7 @@ import numpy as np
 import mdtraj as md
 from boltzmann import protein
 
-t = md.load("../data/AAAA_noconstraints.dcd", top="../data/AAAA.pdb")
+t = md.load("../data/AIYFL.dcd", top="../data/AIYFL.pdb")
 
 # center everything
 t.center_coordinates()

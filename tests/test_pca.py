@@ -4,9 +4,7 @@ import numpy as np
 import mdtraj as md
 
 
-t = md.load("../data/5ura_traj.dcd", top="../data/5ura_start.pdb")
-ind = t.top.select("backbone and resid 1 to 10")
-t = t.atom_slice(ind)
+t = md.load("../data/AIYFL.dcd", top="../data/AIYFL.pdb")
 t.center_coordinates()
 t.superpose(t, 0)
 training_data = t.xyz
@@ -17,9 +15,9 @@ training_data = torch.from_numpy(training_data.astype("float32"))
 # Build the network
 transform = protein.PCATransform(n_dim, training_data=training_data)
 
-# Pass the training data through the network, then reverse it.
-x = training_data
-z, jac_f = transform.forward(training_data)
+# Pass some of the training data through the network, then reverse it.
+x = training_data[:32, :]
+z, jac_f = transform.forward(x)
 
 x_prime, jac_r = transform.inverse(z)
 
