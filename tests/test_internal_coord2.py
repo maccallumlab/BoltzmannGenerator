@@ -5,12 +5,7 @@ import numpy as np
 import mdtraj as md
 from tqdm import tqdm
 
-t = md.load("../data/5ura_traj.dcd", top="../data/5ura_start.pdb")
-ind = t.top.select("backbone")
-t = t.atom_slice(ind)
-t.center_coordinates()
-ind_super = t.top.select("name N CA C O and resid 35")
-t.superpose(t, 0, atom_indices=ind_super, ref_atom_indices=ind_super)
+t = md.load("../data/AAAA_noconstraints.dcd", top="../data/AAAA.pdb")
 training_data = t.xyz
 n_atoms = training_data.shape[1]
 n_dim = n_atoms * 3

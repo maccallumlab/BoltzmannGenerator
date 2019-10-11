@@ -1,5 +1,5 @@
 import torch
-from boltzmann.protein import pca
+from boltzmann import protein
 import numpy as np
 import mdtraj as md
 
@@ -15,7 +15,7 @@ training_data = training_data.reshape(-1, n_dim)
 training_data = torch.from_numpy(training_data.astype("float32"))
 
 # Build the network
-transform = pca.PCA(n_dim, training_data=training_data)
+transform = protein.PCATransform(n_dim, training_data=training_data)
 
 # Pass the training data through the network, then reverse it.
 x = training_data
@@ -46,7 +46,7 @@ n_dim = training_data.shape[1] * 3
 training_data = training_data.reshape(-1, n_dim)
 training_data = torch.from_numpy(training_data.astype("float32"))
 
-transform = pca.PCA(n_dim, training_data=training_data, drop_dims=0)
+transform = protein.PCATransform(n_dim, training_data=training_data, drop_dims=0)
 
 x = training_data
 z, jac_f = transform.forward(training_data)

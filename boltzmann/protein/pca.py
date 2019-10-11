@@ -3,7 +3,7 @@ import torch.nn as nn
 import math
 
 
-class PCA(nn.Module):
+class PCATransform(nn.Module):
     def __init__(self, dims_in, training_data, drop_dims=6):
         super().__init__()
         self.dims = dims_in

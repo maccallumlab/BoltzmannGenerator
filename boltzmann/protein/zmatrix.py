@@ -349,7 +349,7 @@ basis_Zs["MISC"] = [["H3", "N", "CA", "C"], ["OXT", "C", "CA", "N"]]
 MoleculeExtent = namedtuple("MoleculeExtent", "start_res end_res is_protein")
 
 
-def mdtraj_to_z(topology, cartesian_selection, molecules=None, extra_basis=None):
+def mdtraj_to_z(topology, cart_ind, molecules=None, extra_basis=None):
     """
         topology: MDTraj topology
         cartesian: if not MDTraj selection string of atoms not to represent with internal coordinates
@@ -364,9 +364,6 @@ def mdtraj_to_z(topology, cartesian_selection, molecules=None, extra_basis=None)
     basis = basis_Zs.copy()
     if extra_basis:
         basis = {**basis, **extra_basis}
-
-    # get the cartesian atoms that won't be built with internal coordinates
-    cart_ind = topology.select(cartesian_selection)
 
     residues = list(topology.residues)
     for molecule in molecules:
@@ -408,4 +405,4 @@ def mdtraj_to_z(topology, cartesian_selection, molecules=None, extra_basis=None)
     if topology.n_atoms != len(Z) + len(cart_ind):
         raise RuntimeError()
 
-    return Z, cart_ind
+    return Z

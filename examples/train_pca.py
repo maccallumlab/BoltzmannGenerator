@@ -27,7 +27,7 @@ print("Data has size:", training_data.shape)
 N_COUPLING = 4
 AFFINE_LAYER = False
 layers = []
-layers.append(protein.PCA(n_dim, training_data))
+layers.append(protein.PCATransform(n_dim, training_data))
 for _ in range(N_COUPLING):
     p = transforms.RandomPermutation(n_dim - 6, 1)
     mask_even = utils.create_alternating_binary_mask(features=n_dim - 6, even=True)
