@@ -118,7 +118,7 @@ class MixedTransform(nn.Module):
     def out_dim(self):
         return self.n_dim - self._remove_dof
 
-    def forward(self, x):
+    def forward(self, x, context=None):
         # Create the jacobian vector
         jac = x.new_zeros(x.shape[0])
 
@@ -145,7 +145,7 @@ class MixedTransform(nn.Module):
 
         return x, jac
 
-    def inverse(self, x):
+    def inverse(self, x, context=None):
         # Create the jacobian vector
         jac = x.new_zeros(x.shape[0])
 

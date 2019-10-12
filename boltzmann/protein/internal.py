@@ -120,7 +120,7 @@ class InternalCoordinateTransform(transforms.Transform):
             self._setup_std_dih(transformed)
             transformed[:, self.dih_indices] /= self.std_dih
 
-    def forward(self, x):
+    def forward(self, x, context=None):
         trans, jac = self._fwd(x)
         trans[:, self.bond_indices] -= self.mean_bonds
         trans[:, self.bond_indices] /= self.std_bonds
@@ -154,7 +154,7 @@ class InternalCoordinateTransform(transforms.Transform):
         x[:, inds4[:, 2]] = dihedrals
         return x, jac
 
-    def inverse(self, x):
+    def inverse(self, x, context=None):
         # Gather all of the atoms represented as cartesisan coordinates.
         n_batch = x.shape[0]
         cart = x[:, self.init_cart_indices].view(n_batch, -1, 3)

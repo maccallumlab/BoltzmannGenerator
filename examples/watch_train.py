@@ -13,8 +13,8 @@ device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cp
 
 print("Loading trajectory")
 t = md.load("../data/AIYFL.dcd", top="../data/AIYFL.pdb")
-t.center_coordinates()
-t.superpose(t, 0)
+ind = t.topology.select("backbone")
+t.superpose(t, frame=0, atom_indices=ind)
 training_data = t.xyz
 n_dim = training_data.shape[1] * 3
 training_data_npy = training_data.reshape(-1, n_dim)
@@ -25,9 +25,14 @@ print("Data has size:", training_data.shape)
 
 # Build the network
 N_COUPLING = 4
-AFFINE_LAYER = True
+AFFINE_LAYER = False
 layers = []
-layers.append(protein.PCATransform(n_dim, training_data))
+
+# Create the mixed transofrm layer
+pca_block = protein.PCABlock("backbone", True)
+mixed = protein.MixedTransform(n_dim, t.topology, [pca_block], training_data)
+layers.append(mixed)
+
 for _ in range(N_COUPLING):
     p = transforms.RandomPermutation(n_dim - 6, 1)
     mask_even = utils.create_alternating_binary_mask(features=n_dim - 6, even=True)
@@ -96,7 +101,7 @@ net = transforms.CompositeTransform(layers).to(device)
 
 losses = []
 val_losses = []
-epochs = 10000
+epochs = 10_000
 n_batch = 1024  # This is the number of data points per batch
 
 n = training_data_npy.shape[0]
