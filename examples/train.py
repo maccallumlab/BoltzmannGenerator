@@ -170,7 +170,11 @@ def run_training(args):
                 )
                 z_val2 = torch.normal(0, 1, size=(128, n_dim - 6), device=device)
                 x_val2, _ = net.inverse(z_val2)
-                energy = torch.mean(protein.openmm_energy(x_val2, context, 298.0))
+                all_energies = protein.openmm_energy(x_val2, context, 298.0)
+                energy = torch.mean(all_energies)
+                min_energy = torch.min(all_energies)
+                med_energy = torch.median(all_energies)
+
 
                 losses.append(loss.item())
                 val_losses.append(val_loss.item())
@@ -178,7 +182,9 @@ def run_training(args):
 
                 writer.add_scalar("Loss/train", loss.item(), epoch)
                 writer.add_scalar("Loss/validation", val_loss.item(), epoch)
-                writer.add_scalar("Loss/energy", energy.item(), epoch)
+                writer.add_scalar("Loss/mean_energy", energy.item(), epoch)
+                writer.add_scalar("Loss/min_energy", min_energy.item(), epoch)
+                writer.add_scalar("Loss/med_energy", med_energy.item(), epoch)
 
                 x_fixed, _ = net.inverse(z_fixed)
                 trained_coords.append(x_fixed.cpu().detach().numpy())
