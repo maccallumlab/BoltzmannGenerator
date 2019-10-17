@@ -52,16 +52,12 @@ openmm_energy = OpenMMEnergyAdaptor.apply
 
 
 def regularize_energy(energy, energy_cut, energy_max):
+    # Fill any NaNs with energy_max
+    energy = torch.where(torch.isfinite(energy), energy, energy_max)
     # Cap the energy at energy_max
-    energy = torch.where(
-        energy < energy_max, energy, torch.as_tensor(energy_max, dtype=torch.float32)
-    )
+    energy = torch.where(energy < energy_max, energy, energy_max)
     # Make it logarithmic above energy cut and linear below
     energy = torch.where(
-        energy < energy_cut, energy - energy_cut, torch.log(energy - energy_cut + 1)
-    )
-    # Fill any NaNs with energy_max
-    energy = torch.where(
-        torch.isfinite(energy), energy, torch.as_tensor(energy_max, dtype=torch.float32)
+        energy < energy_cut, energy, torch.log(energy - energy_cut + 1) + energy_cut
     )
     return energy
