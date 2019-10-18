@@ -37,7 +37,7 @@ class OpenMMEnergyAdaptor(torch.autograd.Function):
                 )
                 / kBT
             )
-            forces[i, :] = torch.from_numpy(f.reshape(-1).astype("float32"))
+            forces[i, :] = torch.from_numpy(-f.reshape(-1).astype("float32"))
         # Save the forces for the backward step, uploading to the gpu if needed
         ctx.save_for_backward(forces.to(device=device))
         return energies.to(device=device)
