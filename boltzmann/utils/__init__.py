@@ -13,7 +13,7 @@ from .torchutils import (
     tile,
     searchsorted,
     cbrt,
-    get_temperature
+    get_temperature,
 )
 
 from .typechecks import is_bool
@@ -24,3 +24,5 @@ from .typechecks import is_power_of_two
 
 from .io import get_data_root
 from .io import NoDataRootError
+
+from .scheduler import GradualWarmupScheduler
