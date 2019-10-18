@@ -42,7 +42,7 @@ def create_dirs():
 
 
 def create_tensorboard(name):
-    return SummaryWriter(log_dir=f"runs/{name}", purge_step=0)
+    return SummaryWriter(log_dir=f"runs/{name}", purge_step=0, flush_secs=30)
 
 
 def load_trajectory(pdb_path, dcd_path):
@@ -156,10 +156,10 @@ def setup_optimizer(net, init_lr, weight_decay):
     return optimizer
 
 
-def setup_scheduler(optimizer, init_lr, final_lr, epochs, warmup_epochs):
+def setup_scheduler(optimizer, init_lr, final_lr, epochs, warmup_epochs, warmup_factor):
     anneal = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs, final_lr)
     warmup = utils.GradualWarmupScheduler(
-        optimizer, 8, warmup_epochs, after_scheduler=anneal
+        optimizer, warmup_factor, warmup_epochs, after_scheduler=anneal
     )
     return warmup
 
@@ -231,7 +231,7 @@ def run_training(args, device):
         )
 
     optimizer = setup_optimizer(
-        net=net, init_lr=args.init_lr, weight_decay=args.weight_decay
+        net=net, init_lr=args.init_lr / args.warmup_factor, weight_decay=args.weight_decay
     )
     scheduler = setup_scheduler(
         optimizer,
@@ -239,6 +239,7 @@ def run_training(args, device):
         final_lr=args.final_lr,
         epochs=args.epochs,
         warmup_epochs=args.warmup_epochs,
+        warmup_factor=args.warmup_factor
     )
 
     openmm_context = get_openmm_context(args.pdb_path)
@@ -438,6 +439,12 @@ if __name__ == "__main__":
         type=int,
         default=10,
         help="gradually raise learning rate over first WARMUP_EPOCHS (default: %(default)d)",
+    )
+    optimizer_group.add_argument(
+        "--warmup-factor",
+        type=float,
+        default=1000,
+        help="learning rate starts WARMUP_FACTOR below init-lr (default: %(default)d)",
     )
     optimizer_group.add_argument(
         "--init-lr",
