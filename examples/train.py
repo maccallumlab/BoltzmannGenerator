@@ -231,7 +231,9 @@ def run_training(args, device):
         )
 
     optimizer = setup_optimizer(
-        net=net, init_lr=args.init_lr / args.warmup_factor, weight_decay=args.weight_decay
+        net=net,
+        init_lr=args.init_lr / args.warmup_factor,
+        weight_decay=args.weight_decay,
     )
     scheduler = setup_scheduler(
         optimizer,
@@ -239,7 +241,7 @@ def run_training(args, device):
         final_lr=args.final_lr,
         epochs=args.epochs,
         warmup_epochs=args.warmup_epochs,
-        warmup_factor=args.warmup_factor
+        warmup_factor=args.warmup_factor,
     )
 
     openmm_context = get_openmm_context(args.pdb_path)
@@ -276,10 +278,11 @@ def run_training(args, device):
                 index_batch = np.random.choice(indices, args.batch_size, replace=True)
                 x_batch = train_data[index_batch, :]
                 z, z_jac = net.forward(x_batch)
-                example_loss = 0.5 * torch.mean(torch.sum(z ** 2, dim=1)) - torch.mean(
-                    z_jac
+                example_ml_loss = (
+                    0.5 * torch.mean(torch.sum(z ** 2, dim=1)) * args.example_weight
                 )
-                example_loss = args.example_weight * example_loss
+                example_jac_loss = -torch.mean(z_jac) * args.example_weight
+                example_loss = example_ml_loss + example_jac_loss
 
             if args.train_energy:
                 z_batch = torch.normal(
@@ -287,8 +290,9 @@ def run_training(args, device):
                 )
                 x, x_jac = net.inverse(z_batch)
                 energies = energy_evaluator(x)
-                energy_loss = torch.mean(energies) - torch.mean(x_jac)
-                energy_loss = args.energy_weight * energy_loss
+                energy_kl_loss = torch.mean(energies) * args.energy_weight
+                energy_jac_loss = -torch.mean(x_jac) * args.energy_weight
+                energy_loss = energy_kl_loss + energy_jac_loss
 
             if args.train_example and args.train_energy:
                 loss = example_loss + energy_loss
@@ -307,9 +311,15 @@ def run_training(args, device):
                 # Output our training losses
                 writer.add_scalar("Train/loss", loss.item(), epoch)
                 if args.train_example:
-                    writer.add_scalar("Train/example", example_loss.item(), epoch)
+                    writer.add_scalar("Train/example_ml", example_ml_loss.item(), epoch)
+                    writer.add_scalar(
+                        "Train/example_jac", example_jac_loss.item(), epoch
+                    )
+                    writer.add_scalar("Train/example_total", example_loss.item(), epoch)
                 if args.train_energy:
-                    writer.add_scalar("Train/energy", energy_loss.item(), epoch)
+                    writer.add_scalar("Train/energy_kl", energy_kl_loss.item(), epoch)
+                    writer.add_scalar("Train/energy_jac", energy_jac_loss.item(), epoch)
+                    writer.add_scalar("Train/energy_total", energy_loss.item(), epoch)
 
                 # Compute our validation losses
                 with torch.no_grad():
@@ -319,10 +329,15 @@ def run_training(args, device):
                     )
                     x_val = val_data[index_val, :]
                     z_prime, z_prime_jac = net.forward(x_val)
-                    example_loss_val = 0.5 * torch.mean(
-                        torch.sum(z_prime ** 2, dim=1)
-                    ) - torch.mean(z_prime_jac)
-                    example_loss_val = args.example_weight * example_loss_val
+                    example_ml_loss_val = (
+                        0.5
+                        * torch.mean(torch.sum(z_prime ** 2, dim=1))
+                        * args.example_weight
+                    )
+                    example_jac_loss_val = (
+                        -torch.mean(z_prime_jac) * args.example_weight
+                    )
+                    example_loss_val = example_ml_loss_val + example_jac_loss_val
 
                     # Compute the energy validation loss
                     z_val = torch.normal(
@@ -330,8 +345,9 @@ def run_training(args, device):
                     )
                     x_prime, x_prime_jac = net.inverse(z_val)
                     val_energies = energy_evaluator(x_prime)
-                    energy_loss_val = torch.mean(val_energies) - torch.mean(x_prime_jac)
-                    energy_loss_val = args.energy_weight * energy_loss_val
+                    energy_kl_loss_val = torch.mean(val_energies) * args.energy_weight
+                    energy_jac_loss_val = -torch.mean(x_prime_jac) * args.energy_weight
+                    energy_loss_val = energy_kl_loss_val + energy_jac_loss_val
 
                     # Compute the overall validation loss
                     if args.train_example and args.train_energy:
@@ -347,10 +363,22 @@ def run_training(args, device):
 
                     writer.add_scalar("Validation/loss", loss_val.item(), epoch)
                     writer.add_scalar(
-                        "Validation/example", example_loss_val.item(), epoch
+                        "Validation/example_ml", example_ml_loss_val.item(), epoch
                     )
                     writer.add_scalar(
-                        "Validation/energy", energy_loss_val.item(), epoch
+                        "Validation/example_jac", example_jac_loss_val.item(), epoch
+                    )
+                    writer.add_scalar(
+                        "Validation/example_total", example_loss_val.item(), epoch
+                    )
+                    writer.add_scalar(
+                        "Validation/energy_kl", energy_kl_loss_val.item(), epoch
+                    )
+                    writer.add_scalar(
+                        "Validation/energy_jac", energy_jac_loss_val.item(), epoch
+                    )
+                    writer.add_scalar(
+                        "Validation/energy_total", energy_loss_val.item(), epoch
                     )
                     writer.add_scalar(
                         "Energies/mean_energy", torch.mean(val_energies).item(), epoch
