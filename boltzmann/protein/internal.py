@@ -65,8 +65,8 @@ def reconstruct_cart(cart, ref_atoms, bonds, angles, dihs):
     dihs = dihs.unsqueeze(2)
 
     # Compute the log jacobian determinant.
-    jac = 2 * torch.sum(
-        torch.log(bonds.squeeze(2))
+    jac = torch.sum(
+        2 * torch.log(bonds.squeeze(2))
         + torch.log(torch.abs(torch.sin(angles.squeeze(2)))),
         dim=1,
     )
@@ -144,8 +144,8 @@ class InternalCoordinateTransform(transforms.Transform):
         angles = calc_angles(inds2, inds1, inds4, coords=x)
         dihedrals = calc_dihedrals(inds3, inds2, inds1, inds4, coords=x)
 
-        jac = 2 * torch.sum(
-            torch.log(bonds) + torch.log(torch.abs(torch.sin(angles))), dim=1
+        jac = torch.sum(
+            2 * torch.log(bonds) + torch.log(torch.abs(torch.sin(angles))), dim=1
         )
 
         # Replace the cartesian coordinates with internal coordinates.
@@ -214,7 +214,7 @@ class InternalCoordinateTransform(transforms.Transform):
         self.register_buffer("mean_bonds", mean_bonds)
 
     def _setup_std_bonds(self, x):
-        std_bonds = torch.std(x[:, self.bond_indices], dim=0) + 1e-3
+        std_bonds = torch.std(x[:, self.bond_indices], dim=0) + 1e-4
         self.register_buffer("std_bonds", std_bonds)
 
     def _setup_mean_angles(self, x):
@@ -222,7 +222,7 @@ class InternalCoordinateTransform(transforms.Transform):
         self.register_buffer("mean_angles", mean_angles)
 
     def _setup_std_angles(self, x):
-        std_angles = torch.std(x[:, self.angle_indices], dim=0) + 1e-3
+        std_angles = torch.std(x[:, self.angle_indices], dim=0) + 1e-4
         self.register_buffer("std_angles", std_angles)
 
     def _setup_mean_dih(self, x):
