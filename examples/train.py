@@ -1,5 +1,6 @@
 import torch
 from torch.utils.tensorboard import SummaryWriter
+from torch.nn.utils.clip_grad import clip_grad_norm_
 from boltzmann import protein
 from boltzmann.generative import transforms
 from boltzmann import nn
@@ -149,7 +150,7 @@ def parse_args():
     loss_group.add_argument(
         "--no-train-energy", dest="train_energy", action="store_false"
     )
-    loss_group.set_defaults(train_ml=False)
+    loss_group.set_defaults(train_energy=False)
     loss_group.add_argument(
         "--example-weight",
         type=float,
@@ -213,10 +214,6 @@ def create_dirs():
     os.makedirs("models", exist_ok=True)
     os.makedirs("training_traj", exist_ok=True)
     os.makedirs("sample_traj", exist_ok=True)
-
-
-def create_tensorboard(name):
-    return SummaryWriter(log_dir=f"runs/{name}", purge_step=0, flush_secs=30)
 
 
 def load_trajectory(pdb_path, dcd_path):
@@ -378,8 +375,10 @@ def get_energy_evaluator(openmm_context, temperature, energy_high, energy_max, d
     return eval_energy
 
 
-def setup_writer(output_name):
-    writer = create_tensorboard(output_name)
+def setup_writer(args):
+    writer = SummaryWriter(
+        log_dir=f"runs/{args.output_name}", purge_step=0, flush_secs=30
+    )
     writer.add_custom_scalars(
         {
             "total_losses": {
@@ -395,6 +394,7 @@ def setup_writer(output_name):
                     "Multiline",
                     ["example_total_loss/train", "example_total_loss/validation"],
                 ],
+                "gradient_norm": ["Multiline", ["gradient_norm"]],
             },
             "example_losses": {
                 "total": [
@@ -432,6 +432,30 @@ def setup_writer(output_name):
             },
         }
     )
+    writer.add_hparams(
+        {
+            "batch_size": args.batch_size,
+            "epochs": args.epochs,
+            "dropout_prob": args.dropout_fraction,
+            "weight_decay": args.weight_decay,
+            "init_lr": args.init_lr,
+            "final_lr": args.final_lr,
+            "wamup_epochs": args.warmup_epochs,
+            "warmup_factor": args.warmup_factor,
+            "coupling_layers": args.coupling_layers,
+            "is_affine": args.is_affine,
+            "spline_points": args.spline_points,
+            "hidden_features": args.hidden_features,
+            "hidden_layers": args.hidden_layers,
+            "train_example": args.train_example,
+            "example_weight": args.example_weight,
+            "train_energy": args.train_energy,
+            "energy_weight": args.energy_weight,
+            "energy_max": args.energy_max,
+            "energy_high": args.energy_high,
+        },
+        {"dummy": 0},
+    )
     return writer
 
 
@@ -465,7 +489,7 @@ def get_energy_loss(energies, jacobians, energy_weight):
 
 
 def run_training(args, device):
-    writer = setup_writer(args.output_name)
+    writer = setup_writer(args)
 
     traj = load_trajectory(args.pdb_path, args.dcd_path)
     n_dim = traj.xyz.shape[1] * 3
@@ -557,6 +581,7 @@ def run_training(args, device):
 
             optimizer.zero_grad()
             loss.backward()
+            gradient_norm = clip_grad_norm_(net.parameters(), 100.0)
             optimizer.step()
             scheduler.step(epoch)
 
@@ -565,6 +590,7 @@ def run_training(args, device):
 
                 # Output our training losses
                 writer.add_scalar("total_loss/train", loss.item(), epoch)
+                writer.add_scalar("gradient_norm", gradient_norm, epoch)
                 if args.train_example:
                     writer.add_scalar(
                         "example_ml_loss/train", example_ml_loss.item(), epoch
