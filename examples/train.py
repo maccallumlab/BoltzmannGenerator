@@ -81,6 +81,12 @@ def parse_args():
         help="strength of dropout (default: %(default)g)",
     )
     optimizer_group.add_argument(
+        "--max-gradient",
+        type=float,
+        default=100.0,
+        help="maximum allowed gradient (default: %(default)g)",
+    )
+    optimizer_group.add_argument(
         "--log-freq",
         type=int,
         default=10,
@@ -427,7 +433,7 @@ def setup_writer(args):
             "energies": {
                 "minimum": ["Multiline", ["minimum_energy"]],
                 "mean": ["Multiline", ["mean_energy"]],
-                "median": ["Multiline", ["minimum_energy"]],
+                "median": ["Multiline", ["median_energy"]],
                 "fixed": ["Multiline", ["fixed_energy"]],
             },
         }
@@ -442,6 +448,7 @@ def setup_writer(args):
             "final_lr": args.final_lr,
             "wamup_epochs": args.warmup_epochs,
             "warmup_factor": args.warmup_factor,
+            "max_gradient": args.max_gradient,
             "coupling_layers": args.coupling_layers,
             "is_affine": args.is_affine,
             "spline_points": args.spline_points,
@@ -581,7 +588,7 @@ def run_training(args, device):
 
             optimizer.zero_grad()
             loss.backward()
-            gradient_norm = clip_grad_norm_(net.parameters(), 100.0)
+            gradient_norm = clip_grad_norm_(net.parameters(), args.max_gradient)
             optimizer.step()
             scheduler.step(epoch)
 
