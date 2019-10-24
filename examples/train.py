@@ -261,7 +261,7 @@ def build_network(
                     hidden_features=hidden_features,
                     num_blocks=hidden_layers,
                     dropout_probability=dropout_fraction,
-                    use_batch_norm=True,
+                    use_batch_norm=False,
                 ),
             )
             t2 = transforms.AffineCouplingTransform(
@@ -272,7 +272,7 @@ def build_network(
                     hidden_features=hidden_features,
                     num_blocks=hidden_layers,
                     dropout_probability=dropout_fraction,
-                    use_batch_norm=True,
+                    use_batch_norm=False,
                 ),
             )
         else:
@@ -284,7 +284,7 @@ def build_network(
                     hidden_features=hidden_features,
                     num_blocks=hidden_layers,
                     dropout_probability=dropout_fraction,
-                    use_batch_norm=True,
+                    use_batch_norm=False,
                 ),
                 tails="linear",
                 tail_bound=5,
@@ -299,7 +299,7 @@ def build_network(
                     hidden_features=hidden_features,
                     num_blocks=hidden_layers,
                     dropout_probability=dropout_fraction,
-                    use_batch_norm=True,
+                    use_batch_norm=False,
                 ),
                 tails="linear",
                 tail_bound=5,
