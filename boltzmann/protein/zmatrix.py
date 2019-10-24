@@ -369,8 +369,8 @@ def mdtraj_to_z(topology, cart_ind, molecules=None, extra_basis=None):
     for molecule in molecules:
         for res_index in range(molecule.start_res, molecule.end_res):
             residue = residues[res_index]
-            is_nterm = res_index == molecule.start_res
-            is_cterm = res_index == molecule.end_res - 1
+            is_nterm = (res_index == molecule.start_res) and molecule.is_protein
+            is_cterm = (res_index == molecule.end_res - 1) and molecule.is_protein
 
             if is_nterm:
                 H1 = topology.select(f"resid {res_index} and name H1")
@@ -403,6 +403,10 @@ def mdtraj_to_z(topology, cart_ind, molecules=None, extra_basis=None):
                     Z.append((atom_ind, [res_atoms[e] for e in basis_atoms]))
 
     if topology.n_atoms != len(Z) + len(cart_ind):
+        print(len(Z))
+        print(len(cart_ind))
+        print(topology.n_atoms)
+        print(Z)
         raise RuntimeError()
 
     return Z
