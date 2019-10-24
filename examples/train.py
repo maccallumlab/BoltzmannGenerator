@@ -14,6 +14,180 @@ import argparse
 from tqdm import tqdm
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(
+        prog="train.py", description="Train generative model of molecular conformation."
+    )
+
+    path_group = parser.add_argument_group("paths and filenames")
+    # Paths and filenames
+    path_group.add_argument("--pdb-path", required=True, help="path to pdb file")
+    path_group.add_argument("--dcd-path", required=True, help="path to dcd file")
+    path_group.add_argument("--output-name", required=True, help="base name for output")
+    path_group.add_argument(
+        "--overwrite", action="store_true", help="overwrite previous run"
+    )
+    path_group.set_defaults(overwrite=False)
+
+    # Optimization parameters
+    optimizer_group = parser.add_argument_group("optimization parameters")
+    optimizer_group.add_argument(
+        "--epochs",
+        type=int,
+        default=1000,
+        help="number of training iterations (default: %(default)d)",
+    )
+    optimizer_group.add_argument(
+        "--batch-size",
+        type=int,
+        default=1024,
+        help="size of training batch (default: %(default)d)",
+    )
+    optimizer_group.add_argument(
+        "--warmup-epochs",
+        type=int,
+        default=10,
+        help="gradually raise learning rate over first WARMUP_EPOCHS (default: %(default)d)",
+    )
+    optimizer_group.add_argument(
+        "--warmup-factor",
+        type=float,
+        default=1000,
+        help="learning rate starts WARMUP_FACTOR below init-lr (default: %(default)d)",
+    )
+    optimizer_group.add_argument(
+        "--init-lr",
+        type=float,
+        default=1e-3,
+        help="initial learning rate (default: %(default)g)",
+    )
+    optimizer_group.add_argument(
+        "--final-lr",
+        type=float,
+        default=1e-5,
+        help="final learning rate (default: %(default)g)",
+    )
+    optimizer_group.add_argument(
+        "--weight-decay",
+        type=float,
+        default=1e-3,
+        help="strength of weight decay (default: %(default)g)",
+    )
+    optimizer_group.add_argument(
+        "--dropout-fraction",
+        type=float,
+        default=0.5,
+        help="strength of dropout (default: %(default)g)",
+    )
+    optimizer_group.add_argument(
+        "--log-freq",
+        type=int,
+        default=10,
+        help="how often to update tensorboard (default: %(default)d)",
+    )
+    optimizer_group.add_argument(
+        "--fold-validation",
+        type=float,
+        default=10.0,
+        help="how much data to set aside for training (default: %(default)d)",
+    )
+
+    # Network parameters
+    network_group = parser.add_argument_group("network parameters")
+    network_group.add_argument(
+        "--load-network", default=None, help="load previously trained network"
+    )
+    network_group.add_argument(
+        "--coupling-layers",
+        type=int,
+        default=4,
+        help="number of coupling layers (%(default)d)",
+    )
+    network_group.add_argument(
+        "--hidden-features",
+        type=int,
+        default=128,
+        help="number of hidden features in each layer (default: %(default)d)",
+    )
+    network_group.add_argument(
+        "--hidden-layers",
+        type=int,
+        default=2,
+        help="number of hidden layers (default: %(default)d)",
+    )
+    network_group.add_argument(
+        "--spline-points",
+        type=int,
+        default=8,
+        help="number of spline points in NSF layers (default: %(default)d)",
+    )
+    network_group.add_argument(
+        "--is-affine",
+        action="store_true",
+        help="use affine rather than NSF layers (default: False)",
+    )
+    network_group.set_defaults(is_affine=False)
+
+    # Loss Function parameters
+    loss_group = parser.add_argument_group("loss function parameters")
+    loss_group.add_argument(
+        "--train-example",
+        dest="train_example",
+        action="store_true",
+        help="include training by example in loss (default: True)",
+    )
+    loss_group.add_argument(
+        "--no-train-example", dest="train_example", action="store_false"
+    )
+    loss_group.set_defaults(train_example=True)
+    loss_group.add_argument(
+        "--train-energy",
+        dest="train_energy",
+        action="store_true",
+        help="including training by energy in loss (default: False)",
+    )
+    loss_group.add_argument(
+        "--no-train-energy", dest="train_energy", action="store_false"
+    )
+    loss_group.set_defaults(train_ml=False)
+    loss_group.add_argument(
+        "--example-weight",
+        type=float,
+        default=1.0,
+        help="weight for training by example (default: %(default)g)",
+    )
+    loss_group.add_argument(
+        "--energy-weight",
+        type=float,
+        default=1.0,
+        help="weight for training by energy (default: %(default)g)",
+    )
+
+    # Energy evaluation parameters
+    energy_group = parser.add_argument_group("parameters for energy function")
+    energy_group.add_argument(
+        "--temperature",
+        type=float,
+        default=298.0,
+        help="temperature (default: %(default)g)",
+    )
+    energy_group.add_argument(
+        "--energy-max",
+        type=float,
+        default=1e20,
+        help="maximum energy (default: %(default)g)",
+    )
+    energy_group.add_argument(
+        "--energy-high",
+        type=float,
+        default=1e10,
+        help="log transform energies above this value (default: %(default)g)",
+    )
+
+    args = parser.parse_args()
+    return args
+
+
 def get_device():
     if torch.cuda.is_available():
         print("Using cuda")
@@ -204,8 +378,94 @@ def get_energy_evaluator(openmm_context, temperature, energy_high, energy_max, d
     return eval_energy
 
 
+def setup_writer(output_name):
+    writer = create_tensorboard(output_name)
+    writer.add_custom_scalars(
+        {
+            "total_losses": {
+                "total_loss": [
+                    "Multiline",
+                    ["total_loss/train", "total_loss/validation"],
+                ],
+                "energy_loss": [
+                    "Multiline",
+                    ["energy_total_loss/train", "energy_total_loss/validation"],
+                ],
+                "example_loss": [
+                    "Multiline",
+                    ["example_total_loss/train", "example_total_loss/validation"],
+                ],
+            },
+            "example_losses": {
+                "total": [
+                    "Multiline",
+                    ["example_total_loss/train", "example_total_loss/validation"],
+                ],
+                "ml": [
+                    "Multiline",
+                    ["example_ml_loss/train", "example_ml_loss/validation"],
+                ],
+                "jac": [
+                    "Multiline",
+                    ["example_jac_loss/train", "example_jac_loss/validation"],
+                ],
+            },
+            "energy_losses": {
+                "total": [
+                    "Multiline",
+                    ["energy_total_loss/train", "energy_total_loss/validation"],
+                ],
+                "ml": [
+                    "Multiline",
+                    ["energy_kl_loss/train", "energy_kl_loss/validation"],
+                ],
+                "jac": [
+                    "Multiline",
+                    ["energy_jac_loss/train", "energy_jac_loss/validation"],
+                ],
+            },
+            "energies": {
+                "minimum": ["Multiline", ["minimum_energy"]],
+                "mean": ["Multiline", ["mean_energy"]],
+                "median": ["Multiline", ["minimum_energy"]],
+                "fixed": ["Multiline", ["fixed_energy"]],
+            },
+        }
+    )
+    return writer
+
+
+def get_batch_weighted_ml_loss(net, x_batch, example_weight):
+    z, z_jac = net.forward(x_batch)
+
+    ll = 0.5 * torch.sum(z ** 2, dim=1) - z_jac
+    w = torch.exp(ll - torch.max(ll))
+    w_total = torch.sum(w)
+
+    example_ml_loss = (
+        torch.sum(w * 0.5 * torch.sum(z ** 2, dim=1)) / w_total * example_weight
+    )
+    example_jac_loss = -torch.sum(w * z_jac) / w_total * example_weight
+    example_loss = example_ml_loss + example_jac_loss
+    return example_loss, example_ml_loss, example_jac_loss
+
+
+def sample_energy_jac(net, device, energy_evaluator, n_dim, batch_size):
+    z_batch = torch.normal(0, 1, size=(batch_size, n_dim), device=device)
+    x, x_jac = net.inverse(z_batch)
+    energies = energy_evaluator(x)
+    return energies, x_jac
+
+
+def get_energy_loss(energies, jacobians, energy_weight):
+    energy_kl_loss = torch.mean(energies) * energy_weight
+    energy_jac_loss = -torch.mean(jacobians) * energy_weight
+    energy_loss = energy_kl_loss + energy_jac_loss
+    return energy_loss, energy_kl_loss, energy_jac_loss
+
+
 def run_training(args, device):
-    writer = create_tensorboard(args.output_name)
+    writer = setup_writer(args.output_name)
 
     traj = load_trajectory(args.pdb_path, args.dcd_path)
     n_dim = traj.xyz.shape[1] * 3
@@ -272,27 +532,21 @@ def run_training(args, device):
     with tqdm(range(args.epochs)) as progress:
         for epoch in progress:
             net.train()
-            optimizer.zero_grad()
 
             if args.train_example:
                 index_batch = np.random.choice(indices, args.batch_size, replace=True)
                 x_batch = train_data[index_batch, :]
-                z, z_jac = net.forward(x_batch)
-                example_ml_loss = (
-                    0.5 * torch.mean(torch.sum(z ** 2, dim=1)) * args.example_weight
+                example_loss, example_ml_loss, example_jac_loss = get_batch_weighted_ml_loss(
+                    net, x_batch, args.example_weight
                 )
-                example_jac_loss = -torch.mean(z_jac) * args.example_weight
-                example_loss = example_ml_loss + example_jac_loss
 
             if args.train_energy:
-                z_batch = torch.normal(
-                    0, 1, size=(args.batch_size, n_dim - 6), device=device
+                energies, x_jac = sample_energy_jac(
+                    net, device, energy_evaluator, n_dim - 6, args.batch_size
                 )
-                x, x_jac = net.inverse(z_batch)
-                energies = energy_evaluator(x)
-                energy_kl_loss = torch.mean(energies) * args.energy_weight
-                energy_jac_loss = -torch.mean(x_jac) * args.energy_weight
-                energy_loss = energy_kl_loss + energy_jac_loss
+                energy_loss, energy_kl_loss, energy_jac_loss = get_energy_loss(
+                    energies, x_jac, args.energy_weight
+                )
 
             if args.train_example and args.train_energy:
                 loss = example_loss + energy_loss
@@ -301,6 +555,7 @@ def run_training(args, device):
             else:
                 loss = energy_loss
 
+            optimizer.zero_grad()
             loss.backward()
             optimizer.step()
             scheduler.step(epoch)
@@ -309,17 +564,27 @@ def run_training(args, device):
                 net.eval()
 
                 # Output our training losses
-                writer.add_scalar("Train/loss", loss.item(), epoch)
+                writer.add_scalar("total_loss/train", loss.item(), epoch)
                 if args.train_example:
-                    writer.add_scalar("Train/example_ml", example_ml_loss.item(), epoch)
                     writer.add_scalar(
-                        "Train/example_jac", example_jac_loss.item(), epoch
+                        "example_ml_loss/train", example_ml_loss.item(), epoch
                     )
-                    writer.add_scalar("Train/example_total", example_loss.item(), epoch)
+                    writer.add_scalar(
+                        "example_jac_loss/train", example_jac_loss.item(), epoch
+                    )
+                    writer.add_scalar(
+                        "example_total_loss/train", example_loss.item(), epoch
+                    )
                 if args.train_energy:
-                    writer.add_scalar("Train/energy_kl", energy_kl_loss.item(), epoch)
-                    writer.add_scalar("Train/energy_jac", energy_jac_loss.item(), epoch)
-                    writer.add_scalar("Train/energy_total", energy_loss.item(), epoch)
+                    writer.add_scalar(
+                        "energy_kl_loss/train", energy_kl_loss.item(), epoch
+                    )
+                    writer.add_scalar(
+                        "energy_jac_loss/train", energy_jac_loss.item(), epoch
+                    )
+                    writer.add_scalar(
+                        "energy_total_loss/train", energy_loss.item(), epoch
+                    )
 
                 # Compute our validation losses
                 with torch.no_grad():
@@ -328,26 +593,17 @@ def run_training(args, device):
                         indices_val, args.batch_size, replace=True
                     )
                     x_val = val_data[index_val, :]
-                    z_prime, z_prime_jac = net.forward(x_val)
-                    example_ml_loss_val = (
-                        0.5
-                        * torch.mean(torch.sum(z_prime ** 2, dim=1))
-                        * args.example_weight
+                    example_loss_val, example_ml_loss_val, example_jac_loss_val = get_batch_weighted_ml_loss(
+                        net, x_val, args.example_weight
                     )
-                    example_jac_loss_val = (
-                        -torch.mean(z_prime_jac) * args.example_weight
-                    )
-                    example_loss_val = example_ml_loss_val + example_jac_loss_val
 
                     # Compute the energy validation loss
-                    z_val = torch.normal(
-                        0, 1, size=(args.batch_size, n_dim - 6), device=device
+                    val_energies, jac_val = sample_energy_jac(
+                        net, device, energy_evaluator, n_dim - 6, args.batch_size
                     )
-                    x_prime, x_prime_jac = net.inverse(z_val)
-                    val_energies = energy_evaluator(x_prime)
-                    energy_kl_loss_val = torch.mean(val_energies) * args.energy_weight
-                    energy_jac_loss_val = -torch.mean(x_prime_jac) * args.energy_weight
-                    energy_loss_val = energy_kl_loss_val + energy_jac_loss_val
+                    energy_loss_val, energy_kl_loss_val, energy_jac_loss_val = get_energy_loss(
+                        val_energies, jac_val, args.energy_weight
+                    )
 
                     # Compute the overall validation loss
                     if args.train_example and args.train_energy:
@@ -361,35 +617,35 @@ def run_training(args, device):
                         loss=f"{loss.item():8.3f}", val_loss=f"{loss_val.item():8.3f}"
                     )
 
-                    writer.add_scalar("Validation/loss", loss_val.item(), epoch)
+                    writer.add_scalar("total_loss/validation", loss_val.item(), epoch)
                     writer.add_scalar(
-                        "Validation/example_ml", example_ml_loss_val.item(), epoch
+                        "example_ml_loss/validation", example_ml_loss_val.item(), epoch
                     )
                     writer.add_scalar(
-                        "Validation/example_jac", example_jac_loss_val.item(), epoch
-                    )
-                    writer.add_scalar(
-                        "Validation/example_total", example_loss_val.item(), epoch
-                    )
-                    writer.add_scalar(
-                        "Validation/energy_kl", energy_kl_loss_val.item(), epoch
-                    )
-                    writer.add_scalar(
-                        "Validation/energy_jac", energy_jac_loss_val.item(), epoch
-                    )
-                    writer.add_scalar(
-                        "Validation/energy_total", energy_loss_val.item(), epoch
-                    )
-                    writer.add_scalar(
-                        "Energies/mean_energy", torch.mean(val_energies).item(), epoch
-                    )
-                    writer.add_scalar(
-                        "Energies/median_energy",
-                        torch.median(val_energies).item(),
+                        "example_jac_loss/validation",
+                        example_jac_loss_val.item(),
                         epoch,
                     )
                     writer.add_scalar(
-                        "Energies/minimum_energy", torch.min(val_energies).item(), epoch
+                        "example_total_loss/validation", example_loss_val.item(), epoch
+                    )
+                    writer.add_scalar(
+                        "energy_kl_loss/validation", energy_kl_loss_val.item(), epoch
+                    )
+                    writer.add_scalar(
+                        "energy_jac_loss/validation", energy_jac_loss_val.item(), epoch
+                    )
+                    writer.add_scalar(
+                        "energy_total_loss/validation", energy_loss_val.item(), epoch
+                    )
+                    writer.add_scalar(
+                        "mean_energy", torch.mean(val_energies).item(), epoch
+                    )
+                    writer.add_scalar(
+                        "median_energy", torch.median(val_energies).item(), epoch
+                    )
+                    writer.add_scalar(
+                        "minimum_energy", torch.min(val_energies).item(), epoch
                     )
 
                     fixed_x, fixed_x_jac = net.inverse(fixed_z)
@@ -397,9 +653,7 @@ def run_training(args, device):
                         protein.openmm_energy(fixed_x, openmm_context, args.temperature)
                     )
                     fixed_coords.append(fixed_x.cpu().detach().numpy())
-                    writer.add_scalar(
-                        "Energies/fixed_energy", fixed_energy.item(), epoch
-                    )
+                    writer.add_scalar("fixed_energy", fixed_energy.item(), epoch)
 
     # Save our final model
     torch.save(net, f"models/{args.output_name}.pkl")
@@ -434,177 +688,7 @@ def run_training(args, device):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        prog="train.py", description="Train generative model of molecular conformation."
-    )
-
-    path_group = parser.add_argument_group("paths and filenames")
-    # Paths and filenames
-    path_group.add_argument("--pdb-path", required=True, help="path to pdb file")
-    path_group.add_argument("--dcd-path", required=True, help="path to dcd file")
-    path_group.add_argument("--output-name", required=True, help="base name for output")
-    path_group.add_argument(
-        "--overwrite", action="store_true", help="overwrite previous run"
-    )
-    path_group.set_defaults(overwrite=False)
-
-    # Optimization parameters
-    optimizer_group = parser.add_argument_group("optimization parameters")
-    optimizer_group.add_argument(
-        "--epochs",
-        type=int,
-        default=1000,
-        help="number of training iterations (default: %(default)d)",
-    )
-    optimizer_group.add_argument(
-        "--batch-size",
-        type=int,
-        default=1024,
-        help="size of training batch (default: %(default)d)",
-    )
-    optimizer_group.add_argument(
-        "--warmup-epochs",
-        type=int,
-        default=10,
-        help="gradually raise learning rate over first WARMUP_EPOCHS (default: %(default)d)",
-    )
-    optimizer_group.add_argument(
-        "--warmup-factor",
-        type=float,
-        default=1000,
-        help="learning rate starts WARMUP_FACTOR below init-lr (default: %(default)d)",
-    )
-    optimizer_group.add_argument(
-        "--init-lr",
-        type=float,
-        default=1e-3,
-        help="initial learning rate (default: %(default)g)",
-    )
-    optimizer_group.add_argument(
-        "--final-lr",
-        type=float,
-        default=1e-5,
-        help="final learning rate (default: %(default)g)",
-    )
-    optimizer_group.add_argument(
-        "--weight-decay",
-        type=float,
-        default=1e-3,
-        help="strength of weight decay (default: %(default)g)",
-    )
-    optimizer_group.add_argument(
-        "--dropout-fraction",
-        type=float,
-        default=0.5,
-        help="strength of dropout (default: %(default)g)",
-    )
-    optimizer_group.add_argument(
-        "--log-freq",
-        type=int,
-        default=10,
-        help="how often to update tensorboard (default: %(default)d)",
-    )
-    optimizer_group.add_argument(
-        "--fold-validation",
-        type=float,
-        default=10.0,
-        help="how much data to set aside for training (default: %(default)d)",
-    )
-
-    # Network parameters
-    network_group = parser.add_argument_group("network parameters")
-    network_group.add_argument(
-        "--load-network", default=None, help="load previously trained network"
-    )
-    network_group.add_argument(
-        "--coupling-layers",
-        type=int,
-        default=4,
-        help="number of coupling layers (%(default)d)",
-    )
-    network_group.add_argument(
-        "--hidden-features",
-        type=int,
-        default=128,
-        help="number of hidden features in each layer (default: %(default)d)",
-    )
-    network_group.add_argument(
-        "--hidden-layers",
-        type=int,
-        default=2,
-        help="number of hidden layers (default: %(default)d)",
-    )
-    network_group.add_argument(
-        "--spline-points",
-        type=int,
-        default=8,
-        help="number of spline points in NSF layers (default: %(default)d)",
-    )
-    network_group.add_argument(
-        "--is-affine",
-        action="store_true",
-        help="use affine rather than NSF layers (default: False)",
-    )
-    network_group.set_defaults(is_affine=False)
-
-    # Loss Function parameters
-    loss_group = parser.add_argument_group("loss function parameters")
-    loss_group.add_argument(
-        "--train-example",
-        dest="train_example",
-        action="store_true",
-        help="include training by example in loss (default: True)",
-    )
-    loss_group.add_argument(
-        "--no-train-example", dest="train_example", action="store_false"
-    )
-    loss_group.set_defaults(train_example=True)
-    loss_group.add_argument(
-        "--train-energy",
-        dest="train_energy",
-        action="store_true",
-        help="including training by energy in loss (default: False)",
-    )
-    loss_group.add_argument(
-        "--no-train-energy", dest="train_energy", action="store_false"
-    )
-    loss_group.set_defaults(train_ml=False)
-    loss_group.add_argument(
-        "--example-weight",
-        type=float,
-        default=1.0,
-        help="weight for training by example (default: %(default)g)",
-    )
-    loss_group.add_argument(
-        "--energy-weight",
-        type=float,
-        default=1.0,
-        help="weight for training by energy (default: %(default)g)",
-    )
-
-    # Energy evaluation parameters
-    energy_group = parser.add_argument_group("parameters for energy function")
-    energy_group.add_argument(
-        "--temperature",
-        type=float,
-        default=298.0,
-        help="temperature (default: %(default)g)",
-    )
-    energy_group.add_argument(
-        "--energy-max",
-        type=float,
-        default=1e20,
-        help="maximum energy (default: %(default)g)",
-    )
-    energy_group.add_argument(
-        "--energy-high",
-        type=float,
-        default=1e10,
-        help="log transform energies above this value (default: %(default)g)",
-    )
-
-    args = parser.parse_args()
-
+    args = parse_args()
     if not (args.train_example or args.train_energy):
         raise RuntimeError(
             "You must specify at least one of train_example or train_energy."
