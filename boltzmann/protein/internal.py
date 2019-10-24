@@ -144,7 +144,7 @@ class InternalCoordinateTransform(transforms.Transform):
         angles = calc_angles(inds2, inds1, inds4, coords=x)
         dihedrals = calc_dihedrals(inds3, inds2, inds1, inds4, coords=x)
 
-        jac = torch.sum(
+        jac = -torch.sum(
             2 * torch.log(bonds) + torch.log(torch.abs(torch.sin(angles))), dim=1
         )
 
@@ -199,7 +199,7 @@ class InternalCoordinateTransform(transforms.Transform):
 
             # Compute the cartesian coordinates for the newly placed atoms.
             new_cart, cart_jac = reconstruct_cart(cart, ref_atoms, bonds, angles, dihs)
-            jac = jac - cart_jac
+            jac = jac + cart_jac
 
             # Concatenate the cartesian coordinates for the newly placed
             # atoms onto the full set of cartesian coordiantes.
