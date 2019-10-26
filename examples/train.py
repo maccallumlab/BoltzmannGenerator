@@ -381,54 +381,42 @@ def get_energy_evaluator(openmm_context, temperature, energy_high, energy_max, d
     return eval_energy
 
 
-def setup_writer(args):
-    writer = SummaryWriter(
-        log_dir=f"runs/{args.output_name}", purge_step=0, flush_secs=30
+def setup_writers(args):
+    train_writer = SummaryWriter(
+        log_dir=f"runs/{args.output_name}_train", purge_step=0, flush_secs=30
     )
+    test_writer = SummaryWriter(
+        log_dir=f"runs/{args.output_name}_test", purge_step=0, flush_secs=30
+    )
+    setup_custom_scalars(args, train_writer)
+    setup_custom_scalars(args, test_writer)
+    return train_writer, test_writer
+
+
+def setup_custom_scalars(args, writer):
     writer.add_custom_scalars(
         {
             "total_losses": {
-                "total_loss": [
-                    "Multiline",
-                    ["total_loss/train", "total_loss/validation"],
-                ],
+                "total_loss": ["Multiline", ["total_loss", "total_loss"]],
                 "energy_loss": [
                     "Multiline",
-                    ["energy_total_loss/train", "energy_total_loss/validation"],
+                    ["energy_total_loss", "energy_total_loss"],
                 ],
                 "example_loss": [
                     "Multiline",
-                    ["example_total_loss/train", "example_total_loss/validation"],
+                    ["example_total_loss", "example_total_loss"],
                 ],
                 "gradient_norm": ["Multiline", ["gradient_norm"]],
             },
             "example_losses": {
-                "total": [
-                    "Multiline",
-                    ["example_total_loss/train", "example_total_loss/validation"],
-                ],
-                "ml": [
-                    "Multiline",
-                    ["example_ml_loss/train", "example_ml_loss/validation"],
-                ],
-                "jac": [
-                    "Multiline",
-                    ["example_jac_loss/train", "example_jac_loss/validation"],
-                ],
+                "total": ["Multiline", ["example_total_loss", "example_total_loss"]],
+                "ml": ["Multiline", ["example_ml_loss", "example_ml_loss"]],
+                "jac": ["Multiline", ["example_jac_loss", "example_jac_loss"]],
             },
             "energy_losses": {
-                "total": [
-                    "Multiline",
-                    ["energy_total_loss/train", "energy_total_loss/validation"],
-                ],
-                "ml": [
-                    "Multiline",
-                    ["energy_kl_loss/train", "energy_kl_loss/validation"],
-                ],
-                "jac": [
-                    "Multiline",
-                    ["energy_jac_loss/train", "energy_jac_loss/validation"],
-                ],
+                "total": ["Multiline", ["energy_total_loss", "energy_total_loss"]],
+                "ml": ["Multiline", ["energy_kl_loss", "energy_kl_loss"]],
+                "jac": ["Multiline", ["energy_jac_loss", "energy_jac_loss"]],
             },
             "energies": {
                 "minimum": ["Multiline", ["minimum_energy"]],
@@ -438,32 +426,48 @@ def setup_writer(args):
             },
         }
     )
-    writer.add_hparams(
-        {
-            "batch_size": args.batch_size,
-            "epochs": args.epochs,
-            "dropout_prob": args.dropout_fraction,
-            "weight_decay": args.weight_decay,
-            "init_lr": args.init_lr,
-            "final_lr": args.final_lr,
-            "wamup_epochs": args.warmup_epochs,
-            "warmup_factor": args.warmup_factor,
-            "max_gradient": args.max_gradient,
-            "coupling_layers": args.coupling_layers,
-            "is_affine": args.is_affine,
-            "spline_points": args.spline_points,
-            "hidden_features": args.hidden_features,
-            "hidden_layers": args.hidden_layers,
-            "train_example": args.train_example,
-            "example_weight": args.example_weight,
-            "train_energy": args.train_energy,
-            "energy_weight": args.energy_weight,
-            "energy_max": args.energy_max,
-            "energy_high": args.energy_high,
-        },
-        {"dummy": 0},
+
+
+def write_final_stats(
+    args, loss, example_loss, energy_loss, example_train, energy_train
+):
+    writer = SummaryWriter(
+        log_dir=f"runs/{args.output_name}_results", purge_step=0, flush_secs=30
     )
-    return writer
+    h_params = {
+        "batch_size": args.batch_size,
+        "epochs": args.epochs,
+        "dropout_prob": args.dropout_fraction,
+        "weight_decay": args.weight_decay,
+        "init_lr": args.init_lr,
+        "final_lr": args.final_lr,
+        "wamup_epochs": args.warmup_epochs,
+        "warmup_factor": args.warmup_factor,
+        "max_gradient": args.max_gradient,
+        "coupling_layers": args.coupling_layers,
+        "is_affine": args.is_affine,
+        "spline_points": args.spline_points,
+        "hidden_features": args.hidden_features,
+        "hidden_layers": args.hidden_layers,
+        "train_example": args.train_example,
+        "example_weight": args.example_weight,
+        "train_energy": args.train_energy,
+        "energy_weight": args.energy_weight,
+        "energy_max": args.energy_max,
+        "energy_high": args.energy_high,
+    }
+
+    metrics = {
+        "validation_loss": loss,
+        "energy_loss": energy_loss,
+        "example_loss": example_loss,
+    }
+    if args.train_example:
+        metrics["example_loss_train"] = example_train
+    if args.train_energy:
+        metrics["energy_loss_train"] = energy_train
+
+    writer.add_hparams(h_params, metrics)
 
 
 def get_batch_weighted_ml_loss(net, x_batch, example_weight):
@@ -496,7 +500,7 @@ def get_energy_loss(energies, jacobians, energy_weight):
 
 
 def run_training(args, device):
-    writer = setup_writer(args)
+    train_writer, test_writer = setup_writers(args)
 
     traj = load_trajectory(args.pdb_path, args.dcd_path)
     n_dim = traj.xyz.shape[1] * 3
@@ -596,27 +600,27 @@ def run_training(args, device):
                 net.eval()
 
                 # Output our training losses
-                writer.add_scalar("total_loss/train", loss.item(), epoch)
-                writer.add_scalar("gradient_norm", gradient_norm, epoch)
+                train_writer.add_scalar("total_loss", loss.item(), epoch)
+                train_writer.add_scalar("gradient_norm", gradient_norm, epoch)
                 if args.train_example:
-                    writer.add_scalar(
-                        "example_ml_loss/train", example_ml_loss.item(), epoch
+                    train_writer.add_scalar(
+                        "example_ml_loss", example_ml_loss.item(), epoch
                     )
-                    writer.add_scalar(
-                        "example_jac_loss/train", example_jac_loss.item(), epoch
+                    train_writer.add_scalar(
+                        "example_jac_loss", example_jac_loss.item(), epoch
                     )
-                    writer.add_scalar(
-                        "example_total_loss/train", example_loss.item(), epoch
+                    train_writer.add_scalar(
+                        "example_total_loss", example_loss.item(), epoch
                     )
                 if args.train_energy:
-                    writer.add_scalar(
-                        "energy_kl_loss/train", energy_kl_loss.item(), epoch
+                    train_writer.add_scalar(
+                        "energy_kl_loss", energy_kl_loss.item(), epoch
                     )
-                    writer.add_scalar(
-                        "energy_jac_loss/train", energy_jac_loss.item(), epoch
+                    train_writer.add_scalar(
+                        "energy_jac_loss", energy_jac_loss.item(), epoch
                     )
-                    writer.add_scalar(
-                        "energy_total_loss/train", energy_loss.item(), epoch
+                    train_writer.add_scalar(
+                        "energy_total_loss", energy_loss.item(), epoch
                     )
 
                 # Compute our validation losses
@@ -650,34 +654,32 @@ def run_training(args, device):
                         loss=f"{loss.item():8.3f}", val_loss=f"{loss_val.item():8.3f}"
                     )
 
-                    writer.add_scalar("total_loss/validation", loss_val.item(), epoch)
-                    writer.add_scalar(
-                        "example_ml_loss/validation", example_ml_loss_val.item(), epoch
+                    test_writer.add_scalar("total_loss", loss_val.item(), epoch)
+                    test_writer.add_scalar(
+                        "example_ml_loss", example_ml_loss_val.item(), epoch
                     )
-                    writer.add_scalar(
-                        "example_jac_loss/validation",
-                        example_jac_loss_val.item(),
-                        epoch,
+                    test_writer.add_scalar(
+                        "example_jac_loss", example_jac_loss_val.item(), epoch
                     )
-                    writer.add_scalar(
-                        "example_total_loss/validation", example_loss_val.item(), epoch
+                    test_writer.add_scalar(
+                        "example_total_loss", example_loss_val.item(), epoch
                     )
-                    writer.add_scalar(
-                        "energy_kl_loss/validation", energy_kl_loss_val.item(), epoch
+                    test_writer.add_scalar(
+                        "energy_kl_loss", energy_kl_loss_val.item(), epoch
                     )
-                    writer.add_scalar(
-                        "energy_jac_loss/validation", energy_jac_loss_val.item(), epoch
+                    test_writer.add_scalar(
+                        "energy_jac_loss", energy_jac_loss_val.item(), epoch
                     )
-                    writer.add_scalar(
-                        "energy_total_loss/validation", energy_loss_val.item(), epoch
+                    test_writer.add_scalar(
+                        "energy_total_loss", energy_loss_val.item(), epoch
                     )
-                    writer.add_scalar(
+                    test_writer.add_scalar(
                         "mean_energy", torch.mean(val_energies).item(), epoch
                     )
-                    writer.add_scalar(
+                    test_writer.add_scalar(
                         "median_energy", torch.median(val_energies).item(), epoch
                     )
-                    writer.add_scalar(
+                    test_writer.add_scalar(
                         "minimum_energy", torch.min(val_energies).item(), epoch
                     )
 
@@ -686,7 +688,7 @@ def run_training(args, device):
                         protein.openmm_energy(fixed_x, openmm_context, args.temperature)
                     )
                     fixed_coords.append(fixed_x.cpu().detach().numpy())
-                    writer.add_scalar("fixed_energy", fixed_energy.item(), epoch)
+                    test_writer.add_scalar("fixed_energy", fixed_energy.item(), epoch)
 
     # Save our final model
     torch.save(net, f"models/{args.output_name}.pkl")
@@ -701,6 +703,16 @@ def run_training(args, device):
     print("Final validation example loss:", example_loss_val.item())
     print("Final validation energy loss:", energy_loss_val.item())
     print("Final fixed energy loss:", fixed_energy.item())
+
+    # Write our final stats
+    write_final_stats(
+        args,
+        loss_val.item(),
+        example_loss_val.item(),
+        energy_loss_val.item(),
+        example_loss.item() if args.train_example else None,
+        energy_loss.item() if args.train_energy else None,
+    )
 
     # Write the fixed_coords to trajectory
     fixed_coords = np.array(fixed_coords)
