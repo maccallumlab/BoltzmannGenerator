@@ -237,10 +237,10 @@ class PiecewiseQuadraticCDF(transforms.Transform):
         self.tail_bound = tail_bound
         self.tails = tails
 
-        self.unnormalized_widths = nn.Parameter(torch.zeros(*shape, num_bins))
+        self.unnormalized_widths = nn.Parameter(torch.randn(*shape, num_bins))
 
         num_heights = (num_bins - 1) if self.tails == 'linear' else (num_bins + 1)
-        self.unnormalized_heights = nn.Parameter(torch.zeros(*shape, num_heights))
+        self.unnormalized_heights = nn.Parameter(torch.randn(*shape, num_heights))
 
     def _spline(self, inputs, inverse=False):
         batch_size = inputs.shape[0]
