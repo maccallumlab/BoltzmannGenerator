@@ -31,6 +31,7 @@ def unconstrained_rational_quadratic_spline(inputs,
         constant = np.log(np.exp(1 - min_derivative) - 1)
         unnormalized_derivatives[..., 0] = constant
         unnormalized_derivatives[..., -1] = constant
+        unnormalized_derivatives[..., 1:-1] = unnormalized_derivatives[..., 1:-1] + constant
 
         outputs[outside_interval_mask] = inputs[outside_interval_mask]
         logabsdet[outside_interval_mask] = 0

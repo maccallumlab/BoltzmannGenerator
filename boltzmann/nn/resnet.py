@@ -33,8 +33,8 @@ class ResidualBlock(nn.Module):
         ])
         self.dropout = nn.Dropout(p=dropout_probability)
         if zero_initialization:
-            init.uniform_(self.linear_layers[-1].weight, -1e-3, 1e-3)
-            init.uniform_(self.linear_layers[-1].bias, -1e-3, 1e-3)
+            init.zeros_(self.linear_layers[-1].weight)
+            init.zeros_(self.linear_layers[-1].bias)
 
     def forward(self, inputs, context=None):
         temps = inputs
@@ -87,6 +87,8 @@ class ResidualNet(nn.Module):
             ) for _ in range(num_blocks)
         ])
         self.final_layer = nn.Linear(hidden_features, out_features)
+        init.zeros_(self.final_layer.weight)
+        init.zeros_(self.final_layer.bias)
 
     def forward(self, inputs, context=None):
         if context is None:
