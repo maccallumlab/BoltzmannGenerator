@@ -105,6 +105,18 @@ def parse_args():
         "--load-network", default=None, help="load previously trained network"
     )
     network_group.add_argument(
+        "--model-type",
+        default="nsf-coupling",
+        choices=[
+            "affine-coupling",
+            "affine-made",
+            "nsf-unconditional",
+            "nsf-coupling",
+            "nsf-made",
+        ],
+        help="type of model (default: %(default)s)",
+    )
+    network_group.add_argument(
         "--coupling-layers",
         type=int,
         default=4,
@@ -128,12 +140,6 @@ def parse_args():
         default=8,
         help="number of spline points in NSF layers (default: %(default)d)",
     )
-    network_group.add_argument(
-        "--is-affine",
-        action="store_true",
-        help="use affine rather than NSF layers (default: False)",
-    )
-    network_group.set_defaults(is_affine=False)
 
     # Loss Function parameters
     loss_group = parser.add_argument_group("loss function parameters")
@@ -230,12 +236,126 @@ def load_trajectory(pdb_path, dcd_path):
     return t
 
 
+def build_affine_coupling(
+    n_dim, n_coupling, hidden_layers, hidden_features, dropout_fraction
+):
+    layers = []
+    for _ in range(n_coupling):
+        p = transforms.RandomPermutation(n_dim, 1)
+        mask_even = utils.create_alternating_binary_mask(features=n_dim, even=True)
+        mask_odd = utils.create_alternating_binary_mask(features=n_dim, even=False)
+        t1 = transforms.AffineCouplingTransform(
+            mask=mask_even,
+            transform_net_create_fn=lambda in_features, out_features: nn.ResidualNet(
+                in_features=in_features,
+                out_features=out_features,
+                hidden_features=hidden_features,
+                num_blocks=hidden_layers,
+                dropout_probability=dropout_fraction,
+                use_batch_norm=False,
+            ),
+        )
+        t2 = transforms.AffineCouplingTransform(
+            mask=mask_odd,
+            transform_net_create_fn=lambda in_features, out_features: nn.ResidualNet(
+                in_features=in_features,
+                out_features=out_features,
+                hidden_features=hidden_features,
+                num_blocks=hidden_layers,
+                dropout_probability=dropout_fraction,
+                use_batch_norm=False,
+            ),
+        )
+        layers.append(p)
+        layers.append(t1)
+        layers.append(t2)
+    return layers
+
+
+def build_affine_made(n_dim, hidden_layers, hidden_features, dropout_fraction):
+    made = transforms.MaskedAffineAutoregressiveTransform(
+        n_dim,
+        hidden_features=hidden_features,
+        num_blocks=hidden_layers,
+        dropout_probability=dropout_fraction,
+        use_batch_norm=False,
+    )
+    return [made]
+
+
+def build_nsf_unconditional(n_dim, spline_points):
+    nsf = transforms.PiecewiseQuadraticCDF(
+        [n_dim], num_bins=spline_points, tails="linear", tail_bound=5
+    )
+    return [nsf]
+
+
+def build_nsf_coupling(
+    n_dim, n_coupling, spline_points, hidden_layers, hidden_features, dropout_fraction
+):
+    layers = []
+    for _ in range(n_coupling):
+        p = transforms.RandomPermutation(n_dim, 1)
+        mask_even = utils.create_alternating_binary_mask(features=n_dim, even=True)
+        mask_odd = utils.create_alternating_binary_mask(features=n_dim, even=False)
+        t1 = transforms.PiecewiseRationalQuadraticCouplingTransform(
+            mask=mask_even,
+            transform_net_create_fn=lambda in_features, out_features: nn.ResidualNet(
+                in_features=in_features,
+                out_features=out_features,
+                hidden_features=hidden_features,
+                num_blocks=hidden_layers,
+                dropout_probability=dropout_fraction,
+                use_batch_norm=False,
+            ),
+            tails="linear",
+            tail_bound=5,
+            num_bins=spline_points,
+            apply_unconditional_transform=False,
+        )
+        t2 = transforms.PiecewiseRationalQuadraticCouplingTransform(
+            mask=mask_odd,
+            transform_net_create_fn=lambda in_features, out_features: nn.ResidualNet(
+                in_features=in_features,
+                out_features=out_features,
+                hidden_features=hidden_features,
+                num_blocks=hidden_layers,
+                dropout_probability=dropout_fraction,
+                use_batch_norm=False,
+            ),
+            tails="linear",
+            tail_bound=5,
+            num_bins=spline_points,
+            apply_unconditional_transform=False,
+        )
+        layers.append(p)
+        layers.append(t1)
+        layers.append(t2)
+    return layers
+
+
+def build_nsf_made(
+    n_dim, spline_points, hidden_layers, hidden_features, dropout_fraction
+):
+    made = transforms.MaskedPiecewiseRationalQuadraticAutoregressiveTransform(
+        features=n_dim,
+        hidden_features=hidden_features,
+        num_blocks=hidden_layers,
+        dropout_probability=dropout_fraction,
+        use_batch_norm=False,
+        num_bins=spline_points,
+        tails="linear",
+        tail_bound=5,
+    )
+    return [made]
+
+
 def build_network(
+    model_type,
     n_dim,
     topology,
     training_data,
     n_coupling,
-    use_affine_coupling,
     spline_points,
     hidden_features,
     hidden_layers,
@@ -250,69 +370,33 @@ def build_network(
     mixed = protein.MixedTransform(n_dim, topology, [pca_block], training_data)
     layers.append(mixed)
 
-    # Create the coupling layers
-    for _ in range(n_coupling):
-        p = transforms.RandomPermutation(n_dim - 6, 1)
-        mask_even = utils.create_alternating_binary_mask(features=n_dim - 6, even=True)
-        mask_odd = utils.create_alternating_binary_mask(features=n_dim - 6, even=False)
-        if use_affine_coupling:
-            t1 = transforms.AffineCouplingTransform(
-                mask=mask_even,
-                transform_net_create_fn=lambda in_features, out_features: nn.ResidualNet(
-                    in_features=in_features,
-                    out_features=out_features,
-                    hidden_features=hidden_features,
-                    num_blocks=hidden_layers,
-                    dropout_probability=dropout_fraction,
-                    use_batch_norm=False,
-                ),
-            )
-            t2 = transforms.AffineCouplingTransform(
-                mask=mask_odd,
-                transform_net_create_fn=lambda in_features, out_features: nn.ResidualNet(
-                    in_features=in_features,
-                    out_features=out_features,
-                    hidden_features=hidden_features,
-                    num_blocks=hidden_layers,
-                    dropout_probability=dropout_fraction,
-                    use_batch_norm=False,
-                ),
-            )
-        else:
-            t1 = transforms.PiecewiseRationalQuadraticCouplingTransform(
-                mask=mask_even,
-                transform_net_create_fn=lambda in_features, out_features: nn.ResidualNet(
-                    in_features=in_features,
-                    out_features=out_features,
-                    hidden_features=hidden_features,
-                    num_blocks=hidden_layers,
-                    dropout_probability=dropout_fraction,
-                    use_batch_norm=False,
-                ),
-                tails="linear",
-                tail_bound=5,
-                num_bins=spline_points,
-                apply_unconditional_transform=False,
-            )
-            t2 = transforms.PiecewiseRationalQuadraticCouplingTransform(
-                mask=mask_odd,
-                transform_net_create_fn=lambda in_features, out_features: nn.ResidualNet(
-                    in_features=in_features,
-                    out_features=out_features,
-                    hidden_features=hidden_features,
-                    num_blocks=hidden_layers,
-                    dropout_probability=dropout_fraction,
-                    use_batch_norm=False,
-                ),
-                tails="linear",
-                tail_bound=5,
-                num_bins=spline_points,
-                apply_unconditional_transform=False,
-            )
-        layers.append(p)
-        layers.append(t1)
-        layers.append(t2)
+    if model_type == "affine-coupling":
+        new_layers = build_affine_coupling(
+            n_dim - 6, n_coupling, hidden_layers, hidden_features, dropout_fraction
+        )
+    elif model_type == "affine-made":
+        new_layers = build_affine_made(
+            n_dim - 6, hidden_layers, hidden_features, dropout_fraction
+        )
+    elif model_type == "nsf-unconditional":
+        new_layers = build_nsf_unconditional(n_dim - 6, spline_points)
+    elif model_type == "nsf-coupling":
+        new_layers = build_nsf_coupling(
+            n_dim - 6,
+            n_coupling,
+            spline_points,
+            hidden_layers,
+            hidden_features,
+            dropout_fraction,
+        )
+    elif model_type == "nsf-made":
+        new_layers = build_nsf_made(
+            n_dim - 6, spline_points, hidden_layers, hidden_features, dropout_fraction
+        )
+    else:
+        raise RuntimeError()
 
+    layers.extend(new_layers)
     net = transforms.CompositeTransform(layers).to(device)
     print(net)
     print_number_trainable_params(net)
@@ -422,7 +506,6 @@ def setup_custom_scalars(args, writer):
                 "minimum": ["Multiline", ["minimum_energy"]],
                 "mean": ["Multiline", ["mean_energy"]],
                 "median": ["Multiline", ["median_energy"]],
-                "fixed": ["Multiline", ["fixed_energy"]],
             },
         }
     )
@@ -432,7 +515,7 @@ def write_final_stats(
     args, loss, example_loss, energy_loss, example_train, energy_train
 ):
     writer = SummaryWriter(
-        log_dir=f"runs/{args.output_name}_results", purge_step=0, flush_secs=30
+        log_dir=f"results/{args.output_name}_results", purge_step=0, flush_secs=30
     )
     h_params = {
         "batch_size": args.batch_size,
@@ -445,7 +528,7 @@ def write_final_stats(
         "warmup_factor": args.warmup_factor,
         "max_gradient": args.max_gradient,
         "coupling_layers": args.coupling_layers,
-        "is_affine": args.is_affine,
+        "model_type": args.model_type,
         "spline_points": args.spline_points,
         "hidden_features": args.hidden_features,
         "hidden_layers": args.hidden_layers,
@@ -514,10 +597,10 @@ def run_training(args, device):
     else:
         net = build_network(
             n_dim=n_dim,
+            model_type=args.model_type,
             topology=traj.topology,
             training_data=training_data,
             n_coupling=args.coupling_layers,
-            use_affine_coupling=args.is_affine,
             spline_points=args.spline_points,
             hidden_features=args.hidden_features,
             hidden_layers=args.hidden_layers,
@@ -558,11 +641,6 @@ def run_training(args, device):
     train_data = torch.as_tensor(training_data_npy[n_val:, :], device=device)
     indices = np.arange(train_data.shape[0])
     indices_val = np.arange(val_data.shape[0])
-
-    # We're going choose a random latent vector and see what it transforms to
-    # as we train the network.
-    fixed_coords = []
-    fixed_z = torch.normal(0, 1, size=(1, n_dim - 6), device=device)
 
     with tqdm(range(args.epochs)) as progress:
         for epoch in progress:
@@ -683,13 +761,6 @@ def run_training(args, device):
                         "minimum_energy", torch.min(val_energies).item(), epoch
                     )
 
-                    fixed_x, fixed_x_jac = net.inverse(fixed_z)
-                    fixed_energy = torch.mean(
-                        protein.openmm_energy(fixed_x, openmm_context, args.temperature)
-                    )
-                    fixed_coords.append(fixed_x.cpu().detach().numpy())
-                    test_writer.add_scalar("fixed_energy", fixed_energy.item(), epoch)
-
     # Save our final model
     torch.save(net, f"models/{args.output_name}.pkl")
 
@@ -702,7 +773,6 @@ def run_training(args, device):
     print("Final validation loss:", loss_val.item())
     print("Final validation example loss:", example_loss_val.item())
     print("Final validation energy loss:", energy_loss_val.item())
-    print("Final fixed energy loss:", fixed_energy.item())
 
     # Write our final stats
     write_final_stats(
@@ -714,20 +784,14 @@ def run_training(args, device):
         energy_loss.item() if args.train_energy else None,
     )
 
-    # Write the fixed_coords to trajectory
-    fixed_coords = np.array(fixed_coords)
-    fixed_coords = fixed_coords.reshape(fixed_coords.shape[0], -1, 3)
-    traj.unitcell_lengths = None
-    traj.unitcell_angles = None
-    traj.xyz = fixed_coords
-    traj.save(f"training_traj/{args.output_name}.pdb")
-
     # Generate examples and write trajectory
     net.eval()
     z = torch.normal(0, 1, size=(args.batch_size, n_dim - 6), device=device)
     x, _ = net.inverse(z)
     x = x.cpu().detach().numpy()
     x = x.reshape(args.batch_size, -1, 3)
+    traj.unitcell_lengths = None
+    traj.unitcell_angles = None
     traj.xyz = x
     traj.save(f"sample_traj/{args.output_name}.pdb")
 
