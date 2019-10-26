@@ -422,7 +422,8 @@ class PiecewiseRationalQuadraticCouplingTransform(PiecewiseCouplingTransform):
                 tail_bound=tail_bound,
                 min_bin_width=min_bin_width,
                 min_bin_height=min_bin_height,
-                min_derivative=min_derivative
+                min_derivative=min_derivative,
+                identity_init=True
             )
         else:
             unconditional_transform = None
