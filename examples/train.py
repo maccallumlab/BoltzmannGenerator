@@ -15,6 +15,11 @@ import argparse
 from tqdm import tqdm
 
 
+#
+# Command line and logging
+#
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         prog="train.py", description="Train generative model of molecular conformation."
@@ -99,6 +104,26 @@ def parse_args():
         help="how much data to set aside for training (default: %(default)d)",
     )
 
+    pretrans_group = parser.add_argument_group("pretransformation parameters")
+    pretrans_group.add_argument(
+        "--pretrans-type",
+        default="quad-cdf",
+        choices=["quad-cdf", "none"],
+        help="pre-transform inputs before neural network (default: %(default)s)",
+    )
+    pretrans_group.add_argument(
+        "--pretrans-epochs",
+        type=int,
+        default=500,
+        help="number of training epochs for pre-transformation layer (default: %(default)d)",
+    )
+    pretrans_group.add_argument(
+        "--pretrans-lr",
+        type=float,
+        default=1e-2,
+        help="learning rate for pretransform training (default: %(default)g)",
+    )
+
     # Network parameters
     network_group = parser.add_argument_group("network parameters")
     network_group.add_argument(
@@ -120,7 +145,7 @@ def parse_args():
         "--coupling-layers",
         type=int,
         default=4,
-        help="number of coupling layers (%(default)d)",
+        help="number of coupling layers (default: %(default)d)",
     )
     network_group.add_argument(
         "--hidden-features",
@@ -144,25 +169,11 @@ def parse_args():
     # Loss Function parameters
     loss_group = parser.add_argument_group("loss function parameters")
     loss_group.add_argument(
-        "--train-example",
-        dest="train_example",
-        action="store_true",
-        help="include training by example in loss (default: True)",
+        "--training-type",
+        default="example",
+        choices=["example", "energy", "mixed"],
+        help="type of loss function ot use (default: %(default)s)",
     )
-    loss_group.add_argument(
-        "--no-train-example", dest="train_example", action="store_false"
-    )
-    loss_group.set_defaults(train_example=True)
-    loss_group.add_argument(
-        "--train-energy",
-        dest="train_energy",
-        action="store_true",
-        help="including training by energy in loss (default: False)",
-    )
-    loss_group.add_argument(
-        "--no-train-energy", dest="train_energy", action="store_false"
-    )
-    loss_group.set_defaults(train_energy=False)
     loss_group.add_argument(
         "--example-weight",
         type=float,
@@ -198,17 +209,112 @@ def parse_args():
     )
 
     args = parser.parse_args()
+    if args.training_type == "example":
+        args.train_example = True
+        args.train_energy = False
+    elif args.training_type == "energy":
+        args.train_example = False
+        args.train_energy = True
+    elif args.training_type == "mixed":
+        args.train_example = True
+        args.train_energy = True
+    else:
+        raise NotImplementedError()
+
     return args
 
 
-def get_device():
-    if torch.cuda.is_available():
-        print("Using cuda")
-        device = torch.device("cuda")
-    else:
-        print("Using CPU")
-        device = torch.device("cpu")
-    return device
+def setup_writers(args):
+    train_writer = SummaryWriter(
+        log_dir=f"runs/{args.output_name}_train", purge_step=0, flush_secs=30
+    )
+    test_writer = SummaryWriter(
+        log_dir=f"runs/{args.output_name}_test", purge_step=0, flush_secs=30
+    )
+    setup_custom_scalars(args, train_writer)
+    setup_custom_scalars(args, test_writer)
+    return train_writer, test_writer
+
+
+def setup_custom_scalars(args, writer):
+    writer.add_custom_scalars(
+        {
+            "total_losses": {
+                "total_loss": ["Multiline", ["total_loss", "total_loss"]],
+                "energy_loss": [
+                    "Multiline",
+                    ["energy_total_loss", "energy_total_loss"],
+                ],
+                "example_loss": [
+                    "Multiline",
+                    ["example_total_loss", "example_total_loss"],
+                ],
+                "gradient_norm": ["Multiline", ["gradient_norm"]],
+            },
+            "example_losses": {
+                "total": ["Multiline", ["example_total_loss", "example_total_loss"]],
+                "ml": ["Multiline", ["example_ml_loss", "example_ml_loss"]],
+                "jac": ["Multiline", ["example_jac_loss", "example_jac_loss"]],
+            },
+            "energy_losses": {
+                "total": ["Multiline", ["energy_total_loss", "energy_total_loss"]],
+                "ml": ["Multiline", ["energy_kl_loss", "energy_kl_loss"]],
+                "jac": ["Multiline", ["energy_jac_loss", "energy_jac_loss"]],
+            },
+            "energies": {
+                "minimum": ["Multiline", ["minimum_energy"]],
+                "mean": ["Multiline", ["mean_energy"]],
+                "median": ["Multiline", ["median_energy"]],
+            },
+        }
+    )
+
+
+def write_final_stats(
+    args, loss, example_loss, energy_loss, example_train, energy_train
+):
+    writer = SummaryWriter(
+        log_dir=f"results/{args.output_name}_results", purge_step=0, flush_secs=30
+    )
+    h_params = {
+        "batch_size": args.batch_size,
+        "epochs": args.epochs,
+        "dropout_prob": args.dropout_fraction,
+        "weight_decay": args.weight_decay,
+        "init_lr": args.init_lr,
+        "final_lr": args.final_lr,
+        "wamup_epochs": args.warmup_epochs,
+        "warmup_factor": args.warmup_factor,
+        "max_gradient": args.max_gradient,
+        "coupling_layers": args.coupling_layers,
+        "model_type": args.model_type,
+        "spline_points": args.spline_points,
+        "hidden_features": args.hidden_features,
+        "hidden_layers": args.hidden_layers,
+        "train_example": args.train_example,
+        "example_weight": args.example_weight,
+        "train_energy": args.train_energy,
+        "energy_weight": args.energy_weight,
+        "energy_max": args.energy_max,
+        "energy_high": args.energy_high,
+    }
+
+    metrics = {
+        "validation_loss": loss,
+        "energy_loss": energy_loss,
+        "example_loss": example_loss,
+    }
+    if args.train_example:
+        metrics["example_loss_train"] = example_train
+    if args.train_energy:
+        metrics["energy_loss_train"] = energy_train
+
+    writer.add_hparams(h_params, metrics)
+
+
+#
+# File input / output
+#
 
 
 def delete_run(name):
@@ -234,6 +340,18 @@ def load_trajectory(pdb_path, dcd_path):
     ind = t.topology.select("backbone")
     t.superpose(t, frame=0, atom_indices=ind)
     return t
+
+
+def load_network(path, device):
+    net = torch.load(path).to(device)
+    print(net)
+    print_number_trainable_params(net)
+    return net
+
+
+#
+# Build network
+#
 
 
 def build_affine_coupling(
@@ -360,6 +478,10 @@ def build_network(
     hidden_features,
     hidden_layers,
     dropout_fraction,
+    pretrans_type,
+    pretrans_epochs,
+    pretrans_lr,
+    pretrans_batch_size,
     device,
 ):
     print("Creating network")
@@ -369,6 +491,26 @@ def build_network(
     pca_block = protein.PCABlock("backbone", True)
     mixed = protein.MixedTransform(n_dim, topology, [pca_block], training_data)
     layers.append(mixed)
+
+    if pretrans_type == "quad-cdf":
+        print()
+        print("Pre-training unconditional NSF layer")
+        print()
+        unconditional = build_nsf_unconditional(n_dim - 6, spline_points)[0]
+        layers.append(unconditional)
+        unconditional_net = transforms.CompositeTransform(layers).to(device)
+        pre_train_unconditional_nsf(
+            unconditional_net,
+            training_data,
+            pretrans_batch_size,
+            pretrans_epochs,
+            pretrans_lr,
+            10,
+        )
+        print()
+        print("Pretraining completed. Freezing weights")
+        unconditional.unnormalized_heights.requires_grad_(False)
+        unconditional.unnormalized_widths.requires_grad_(False)
 
     if model_type == "affine-coupling":
         new_layers = build_affine_coupling(
@@ -398,31 +540,11 @@ def build_network(
 
     layers.extend(new_layers)
     net = transforms.CompositeTransform(layers).to(device)
-    print(net)
+    print()
+    print("Network constructed.")
     print_number_trainable_params(net)
+    print()
     return net
-
-
-def load_network(path, device):
-    net = torch.load(path).to(device)
-    print(net)
-    print_number_trainable_params(net)
-    return net
-
-
-def setup_optimizer(net, init_lr, weight_decay):
-    optimizer = torch.optim.AdamW(
-        net.parameters(), lr=init_lr, weight_decay=weight_decay
-    )
-    return optimizer
-
-
-def setup_scheduler(optimizer, init_lr, final_lr, epochs, warmup_epochs, warmup_factor):
-    anneal = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs, final_lr)
-    warmup = utils.GradualWarmupScheduler(
-        optimizer, warmup_factor, warmup_epochs, after_scheduler=anneal
-    )
-    return warmup
 
 
 def print_number_trainable_params(net):
@@ -430,6 +552,11 @@ def print_number_trainable_params(net):
     print()
     print(f"Network has {total_params} trainable parameters")
     print()
+
+
+#
+# Energy function
+#
 
 
 def get_openmm_context(pdb_path):
@@ -465,92 +592,29 @@ def get_energy_evaluator(openmm_context, temperature, energy_high, energy_max, d
     return eval_energy
 
 
-def setup_writers(args):
-    train_writer = SummaryWriter(
-        log_dir=f"runs/{args.output_name}_train", purge_step=0, flush_secs=30
+#
+# Optimizer
+#
+
+
+def setup_optimizer(net, init_lr, weight_decay):
+    optimizer = torch.optim.AdamW(
+        net.parameters(), lr=init_lr, weight_decay=weight_decay
     )
-    test_writer = SummaryWriter(
-        log_dir=f"runs/{args.output_name}_test", purge_step=0, flush_secs=30
+    return optimizer
+
+
+def setup_scheduler(optimizer, init_lr, final_lr, epochs, warmup_epochs, warmup_factor):
+    anneal = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs, final_lr)
+    warmup = utils.GradualWarmupScheduler(
+        optimizer, warmup_factor, warmup_epochs, after_scheduler=anneal
     )
-    setup_custom_scalars(args, train_writer)
-    setup_custom_scalars(args, test_writer)
-    return train_writer, test_writer
+    return warmup
 
 
-def setup_custom_scalars(args, writer):
-    writer.add_custom_scalars(
-        {
-            "total_losses": {
-                "total_loss": ["Multiline", ["total_loss", "total_loss"]],
-                "energy_loss": [
-                    "Multiline",
-                    ["energy_total_loss", "energy_total_loss"],
-                ],
-                "example_loss": [
-                    "Multiline",
-                    ["example_total_loss", "example_total_loss"],
-                ],
-                "gradient_norm": ["Multiline", ["gradient_norm"]],
-            },
-            "example_losses": {
-                "total": ["Multiline", ["example_total_loss", "example_total_loss"]],
-                "ml": ["Multiline", ["example_ml_loss", "example_ml_loss"]],
-                "jac": ["Multiline", ["example_jac_loss", "example_jac_loss"]],
-            },
-            "energy_losses": {
-                "total": ["Multiline", ["energy_total_loss", "energy_total_loss"]],
-                "ml": ["Multiline", ["energy_kl_loss", "energy_kl_loss"]],
-                "jac": ["Multiline", ["energy_jac_loss", "energy_jac_loss"]],
-            },
-            "energies": {
-                "minimum": ["Multiline", ["minimum_energy"]],
-                "mean": ["Multiline", ["mean_energy"]],
-                "median": ["Multiline", ["median_energy"]],
-            },
-        }
-    )
-
-
-def write_final_stats(
-    args, loss, example_loss, energy_loss, example_train, energy_train
-):
-    writer = SummaryWriter(
-        log_dir=f"results/{args.output_name}_results", purge_step=0, flush_secs=30
-    )
-    h_params = {
-        "batch_size": args.batch_size,
-        "epochs": args.epochs,
-        "dropout_prob": args.dropout_fraction,
-        "weight_decay": args.weight_decay,
-        "init_lr": args.init_lr,
-        "final_lr": args.final_lr,
-        "wamup_epochs": args.warmup_epochs,
-        "warmup_factor": args.warmup_factor,
-        "max_gradient": args.max_gradient,
-        "coupling_layers": args.coupling_layers,
-        "model_type": args.model_type,
-        "spline_points": args.spline_points,
-        "hidden_features": args.hidden_features,
-        "hidden_layers": args.hidden_layers,
-        "train_example": args.train_example,
-        "example_weight": args.example_weight,
-        "train_energy": args.train_energy,
-        "energy_weight": args.energy_weight,
-        "energy_max": args.energy_max,
-        "energy_high": args.energy_high,
-    }
-
-    metrics = {
-        "validation_loss": loss,
-        "energy_loss": energy_loss,
-        "example_loss": example_loss,
-    }
-    if args.train_example:
-        metrics["example_loss_train"] = example_train
-    if args.train_energy:
-        metrics["energy_loss_train"] = energy_train
-
-    writer.add_hparams(h_params, metrics)
+#
+# Loss functions
+#
 
 
 def get_batch_weighted_ml_loss(net, x_batch, example_weight):
@@ -558,6 +622,7 @@ def get_batch_weighted_ml_loss(net, x_batch, example_weight):
 
     ll = 0.5 * torch.sum(z ** 2, dim=1) - z_jac
     w = torch.exp(ll - torch.max(ll))
+    w = torch.ones_like(w)
     w_total = torch.sum(w)
 
     example_ml_loss = (
@@ -580,6 +645,38 @@ def get_energy_loss(energies, jacobians, energy_weight):
     energy_jac_loss = -torch.mean(jacobians) * energy_weight
     energy_loss = energy_kl_loss + energy_jac_loss
     return energy_loss, energy_kl_loss, energy_jac_loss
+
+
+#
+# Training
+#
+
+
+def get_device():
+    if torch.cuda.is_available():
+        print("Using cuda")
+        device = torch.device("cuda")
+    else:
+        print("Using CPU")
+        device = torch.device("cpu")
+    return device
+
+
+def pre_train_unconditional_nsf(net, training_data, batch_size, epochs, lr, out_freq):
+    indices = np.arange(training_data.shape[0])
+    optimizer = setup_optimizer(net, lr, 0.0)
+    with tqdm(range(epochs)) as progress:
+        for epoch in progress:
+            net.train()
+
+            index_batch = np.random.choice(indices, args.batch_size, replace=True)
+            x_batch = training_data[index_batch, :]
+            loss, _, _ = get_batch_weighted_ml_loss(net, x_batch, args.example_weight)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            if epoch % out_freq == 0:
+                progress.set_postfix(loss=f"{loss.item():8.3f}")
 
 
 def run_training(args, device):
@@ -605,6 +702,10 @@ def run_training(args, device):
             hidden_features=args.hidden_features,
             hidden_layers=args.hidden_layers,
             dropout_fraction=args.dropout_fraction,
+            pretrans_type=args.pretrans_type,
+            pretrans_epochs=args.pretrans_epochs,
+            pretrans_lr=args.pretrans_lr,
+            pretrans_batch_size=args.batch_size,
             device=device,
         )
 
