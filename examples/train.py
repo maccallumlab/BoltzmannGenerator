@@ -1,6 +1,7 @@
 import torch
 from torch.utils.tensorboard import SummaryWriter
 from torch.nn.utils.clip_grad import clip_grad_norm_
+from torch import distributions
 from boltzmann import protein
 from boltzmann.generative import transforms
 from boltzmann import nn
@@ -617,24 +618,32 @@ def setup_scheduler(optimizer, init_lr, final_lr, epochs, warmup_epochs, warmup_
 #
 
 
-def get_batch_weighted_ml_loss(net, x_batch, example_weight):
+def get_batch_weighted_ml_loss(net, x_batch, example_weight, dist):
     z, z_jac = net.forward(x_batch)
 
     ll = 0.5 * torch.sum(z ** 2, dim=1) - z_jac
     w = torch.exp(ll - torch.max(ll))
-    w = torch.ones_like(w)
     w_total = torch.sum(w)
 
     example_ml_loss = (
-        torch.sum(w * 0.5 * torch.sum(z ** 2, dim=1)) / w_total * example_weight
+        torch.sum(w * dist.log_prob(z)) / w_total * example_weight
     )
     example_jac_loss = -torch.sum(w * z_jac) / w_total * example_weight
     example_loss = example_ml_loss + example_jac_loss
     return example_loss, example_ml_loss, example_jac_loss
 
 
-def sample_energy_jac(net, device, energy_evaluator, n_dim, batch_size):
-    z_batch = torch.normal(0, 1, size=(batch_size, n_dim), device=device)
+def get_ml_loss(net, x_batch, example_weight, dist):
+    z, z_jac = net.forward(x_batch)
+
+    example_ml_loss = -torch.mean(dist.log_prob(z)) * example_weight
+    example_jac_loss = -torch.mean(z_jac) * example_weight
+    example_loss = example_ml_loss + example_jac_loss
+    return example_loss, example_ml_loss, example_jac_loss
+
+
+def sample_energy_jac(net, device, energy_evaluator, dist):
+    z_batch = dist.sample()
     x, x_jac = net.inverse(z_batch)
     energies = energy_evaluator(x)
     return energies, x_jac
@@ -663,6 +672,10 @@ def get_device():
 
 
 def pre_train_unconditional_nsf(net, training_data, batch_size, epochs, lr, out_freq):
+    mu = torch.zeros(training_data.shape[-1] - 6, device=training_data.device)
+    cov = torch.eye(training_data.shape[-1] - 6, device=training_data.device)
+    dist = distributions.MultivariateNormal(mu, covariance_matrix=cov).expand((batch_size, ))
+
     indices = np.arange(training_data.shape[0])
     optimizer = setup_optimizer(net, lr, 0.0)
     with tqdm(range(epochs)) as progress:
@@ -671,7 +684,7 @@ def pre_train_unconditional_nsf(net, training_data, batch_size, epochs, lr, out_
 
             index_batch = np.random.choice(indices, args.batch_size, replace=True)
             x_batch = training_data[index_batch, :]
-            loss, _, _ = get_batch_weighted_ml_loss(net, x_batch, args.example_weight)
+            loss, _, _ = get_ml_loss(net, x_batch, args.example_weight, dist)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -743,6 +756,14 @@ def run_training(args, device):
     indices = np.arange(train_data.shape[0])
     indices_val = np.arange(val_data.shape[0])
 
+    train_writer.add_graph(net, val_data)
+
+    mu = torch.zeros(train_data.shape[-1] - 6, device=device)
+    cov = torch.eye(train_data.shape[-1] - 6, device=device)
+    dist = distributions.MultivariateNormal(mu, covariance_matrix=cov).expand(
+        (args.batch_size, )
+    )
+
     with tqdm(range(args.epochs)) as progress:
         for epoch in progress:
             net.train()
@@ -750,13 +771,13 @@ def run_training(args, device):
             if args.train_example:
                 index_batch = np.random.choice(indices, args.batch_size, replace=True)
                 x_batch = train_data[index_batch, :]
-                example_loss, example_ml_loss, example_jac_loss = get_batch_weighted_ml_loss(
-                    net, x_batch, args.example_weight
+                example_loss, example_ml_loss, example_jac_loss = get_ml_loss(
+                    net, x_batch, args.example_weight, dist
                 )
 
             if args.train_energy:
                 energies, x_jac = sample_energy_jac(
-                    net, device, energy_evaluator, n_dim - 6, args.batch_size
+                    net, device, energy_evaluator, dist
                 )
                 energy_loss, energy_kl_loss, energy_jac_loss = get_energy_loss(
                     energies, x_jac, args.energy_weight
@@ -809,13 +830,13 @@ def run_training(args, device):
                         indices_val, args.batch_size, replace=True
                     )
                     x_val = val_data[index_val, :]
-                    example_loss_val, example_ml_loss_val, example_jac_loss_val = get_batch_weighted_ml_loss(
-                        net, x_val, args.example_weight
+                    example_loss_val, example_ml_loss_val, example_jac_loss_val = get_ml_loss(
+                        net, x_val, args.example_weight, dist
                     )
 
                     # Compute the energy validation loss
                     val_energies, jac_val = sample_energy_jac(
-                        net, device, energy_evaluator, n_dim - 6, args.batch_size
+                        net, device, energy_evaluator, dist
                     )
                     energy_loss_val, energy_kl_loss_val, energy_jac_loss_val = get_energy_loss(
                         val_energies, jac_val, args.energy_weight
