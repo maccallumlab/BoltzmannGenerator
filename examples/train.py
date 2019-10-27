@@ -756,8 +756,6 @@ def run_training(args, device):
     indices = np.arange(train_data.shape[0])
     indices_val = np.arange(val_data.shape[0])
 
-    train_writer.add_graph(net, val_data)
-
     mu = torch.zeros(train_data.shape[-1] - 6, device=device)
     cov = torch.eye(train_data.shape[-1] - 6, device=device)
     dist = distributions.MultivariateNormal(mu, covariance_matrix=cov).expand(
