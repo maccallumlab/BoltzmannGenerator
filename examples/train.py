@@ -502,6 +502,7 @@ def build_network(
         unconditional_net = transforms.CompositeTransform(layers).to(device)
         pre_train_unconditional_nsf(
             unconditional_net,
+            device,
             training_data,
             pretrans_batch_size,
             pretrans_epochs,
@@ -671,9 +672,9 @@ def get_device():
     return device
 
 
-def pre_train_unconditional_nsf(net, training_data, batch_size, epochs, lr, out_freq):
-    mu = torch.zeros(training_data.shape[-1] - 6, device=training_data.device)
-    cov = torch.eye(training_data.shape[-1] - 6, device=training_data.device)
+def pre_train_unconditional_nsf(net, device, training_data, batch_size, epochs, lr, out_freq):
+    mu = torch.zeros(training_data.shape[-1] - 6, device=device)
+    cov = torch.eye(training_data.shape[-1] - 6, device=device)
     dist = distributions.MultivariateNormal(mu, covariance_matrix=cov).expand((batch_size, ))
 
     indices = np.arange(training_data.shape[0])
