@@ -321,8 +321,6 @@ def write_final_stats(
 def delete_run(name):
     if os.path.exists(f"models/{name}.pkl"):
         os.remove(f"models/{name}.pkl")
-    if os.path.exists(f"training_traj/{name}.pdb"):
-        os.remove(f"training_traj/{name}.pdb")
     if os.path.exists(f"sample_traj/{name}.pdb"):
         os.remove(f"sample_traj/{name}.pdb")
     if os.path.exists(f"runs/{name}"):
@@ -331,7 +329,6 @@ def delete_run(name):
 
 def create_dirs():
     os.makedirs("models", exist_ok=True)
-    os.makedirs("training_traj", exist_ok=True)
     os.makedirs("sample_traj", exist_ok=True)
 
 
@@ -485,6 +482,8 @@ def build_network(
     pretrans_batch_size,
     device,
 ):
+    training_data = training_data.to(device)
+
     print("Creating network")
     layers = []
 
