@@ -119,6 +119,12 @@ class InternalCoordinateTransform(transforms.Transform):
             self._fix_dih(transformed)
             self._setup_std_dih(transformed)
             transformed[:, self.dih_indices] /= self.std_dih
+            scale_jac = (
+                torch.sum(torch.log(self.std_bonds))
+                + torch.sum(torch.log(self.std_angles))
+                + torch.sum(torch.log(self.std_dih))
+            )
+            self.register_buffer("scale_jac", scale_jac)
 
     def forward(self, x, context=None):
         trans, jac = self._fwd(x)
@@ -129,7 +135,7 @@ class InternalCoordinateTransform(transforms.Transform):
         trans[:, self.dih_indices] -= self.mean_dih
         self._fix_dih(trans)
         trans[:, self.dih_indices] /= self.std_dih
-        return trans, jac
+        return trans, jac + self.scale_jac
 
     def _fwd(self, x):
         x = x.clone()
@@ -207,7 +213,7 @@ class InternalCoordinateTransform(transforms.Transform):
         # Permute cart back into the original order and flatten.
         cart = cart[:, self.rev_perm_inv]
         cart = cart.view(n_batch, -1)
-        return cart, jac
+        return cart, jac - self.scale_jac
 
     def _setup_mean_bonds(self, x):
         mean_bonds = torch.mean(x[:, self.bond_indices], dim=0)
