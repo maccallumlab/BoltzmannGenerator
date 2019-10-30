@@ -120,7 +120,17 @@ def rational_quadratic_spline(inputs,
         c = - input_delta * (inputs - input_cumheights)
 
         discriminant = b.pow(2) - 4 * a * c
-        assert (discriminant >= 0).all()
+        # assert (discriminant >= 0).all()
+        if not (discriminant >=0).all():
+            print("discriminant", discriminant)
+            print("a", a)
+            print("b", b)
+            print("c", c)
+            print("inputs", inputs)
+            print("input_cumheights", input_cumheights)
+            print("input_derivatives", input_derivatives)
+            print("input_derivatives_plus_one", input_derivatives_plus_one)
+            raise RuntimeError("Something's fucky, boys!")
 
         root = (2 * c) / (-b - torch.sqrt(discriminant))
         outputs = root * input_bin_widths + input_cumwidths
