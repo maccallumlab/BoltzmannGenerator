@@ -182,6 +182,12 @@ def parse_args():
         help="weight for training by example (default: %(default)g)",
     )
     loss_group.add_argument(
+        "--example-noise",
+        type=float,
+        default=0.0,
+        help="amount of noise to add to cartesian coords(default %(default)g nm)",
+    )
+    loss_group.add_argument(
         "--energy-weight",
         type=float,
         default=1.0,
@@ -294,6 +300,7 @@ def write_final_stats(
         "hidden_layers": args.hidden_layers,
         "train_example": args.train_example,
         "example_weight": args.example_weight,
+        "example_noise": args.example_noise,
         "train_energy": args.train_energy,
         "energy_weight": args.energy_weight,
         "energy_max": args.energy_max,
@@ -332,12 +339,17 @@ def create_dirs():
     os.makedirs("sample_traj", exist_ok=True)
 
 
-def load_trajectory(pdb_path, dcd_path):
+def load_trajectory(pdb_path, dcd_path, noise_level):
     print("Loading trajectory")
     t = md.load(args.dcd_path, top=args.pdb_path)
     ind = t.topology.select("backbone")
+    t_noise = t.slice(...)
+    t_noise.xyz = t_noise.xyz + np.random.normal(
+        loc=0.0, scale=noise_level, size=t_noise.xyz.shape
+    )
     t.superpose(t, frame=0, atom_indices=ind)
-    return t
+    t_noise.superpose(t_noise, frame=0, atom_indices=ind)
+    return t, t_noise
 
 
 def load_network(path, device):
@@ -543,6 +555,7 @@ def build_network(
     net = transforms.CompositeTransform(layers).to(device)
     print()
     print("Network constructed.")
+    print(net)
     print_number_trainable_params(net)
     print()
     return net
@@ -625,9 +638,7 @@ def get_batch_weighted_ml_loss(net, x_batch, example_weight, dist):
     w = torch.exp(ll - torch.max(ll))
     w_total = torch.sum(w)
 
-    example_ml_loss = (
-        torch.sum(w * dist.log_prob(z)) / w_total * example_weight
-    )
+    example_ml_loss = torch.sum(w * dist.log_prob(z)) / w_total * example_weight
     example_jac_loss = -torch.sum(w * z_jac) / w_total * example_weight
     example_loss = example_ml_loss + example_jac_loss
     return example_loss, example_ml_loss, example_jac_loss
@@ -671,10 +682,14 @@ def get_device():
     return device
 
 
-def pre_train_unconditional_nsf(net, device, training_data, batch_size, epochs, lr, out_freq):
+def pre_train_unconditional_nsf(
+    net, device, training_data, batch_size, epochs, lr, out_freq
+):
     mu = torch.zeros(training_data.shape[-1] - 6, device=device)
     cov = torch.eye(training_data.shape[-1] - 6, device=device)
-    dist = distributions.MultivariateNormal(mu, covariance_matrix=cov).expand((batch_size, ))
+    dist = distributions.MultivariateNormal(mu, covariance_matrix=cov).expand(
+        (batch_size,)
+    )
 
     indices = np.arange(training_data.shape[0])
     optimizer = setup_optimizer(net, lr, 0.0)
@@ -695,10 +710,12 @@ def pre_train_unconditional_nsf(net, device, training_data, batch_size, epochs, 
 def run_training(args, device):
     train_writer, test_writer = setup_writers(args)
 
-    traj = load_trajectory(args.pdb_path, args.dcd_path)
+    traj, traj_noise = load_trajectory(args.pdb_path, args.dcd_path, args.example_noise)
     n_dim = traj.xyz.shape[1] * 3
     training_data_npy = traj.xyz.reshape(-1, n_dim)
     training_data = torch.from_numpy(training_data_npy.astype("float32"))
+    training_data_noise_npy = traj_noise.xyz.reshape(-1, n_dim)
+    training_data_noise = torch.from_numpy(training_data_noise_npy.astype("float32"))
     print("Trajectory loaded")
     print("Data has size:", training_data.shape)
 
@@ -709,7 +726,7 @@ def run_training(args, device):
             n_dim=n_dim,
             model_type=args.model_type,
             topology=traj.topology,
-            training_data=training_data,
+            training_data=training_data_noise,
             n_coupling=args.coupling_layers,
             spline_points=args.spline_points,
             hidden_features=args.hidden_features,
@@ -759,7 +776,7 @@ def run_training(args, device):
     mu = torch.zeros(train_data.shape[-1] - 6, device=device)
     cov = torch.eye(train_data.shape[-1] - 6, device=device)
     dist = distributions.MultivariateNormal(mu, covariance_matrix=cov).expand(
-        (args.batch_size, )
+        (args.batch_size,)
     )
 
     with tqdm(range(args.epochs)) as progress:
@@ -769,14 +786,16 @@ def run_training(args, device):
             if args.train_example:
                 index_batch = np.random.choice(indices, args.batch_size, replace=True)
                 x_batch = train_data[index_batch, :]
+                if args.example_noise > 0:
+                    x_batch = x_batch + torch.normal(
+                        0, args.example_noise, size=x_batch.shape, device=device
+                    )
                 example_loss, example_ml_loss, example_jac_loss = get_ml_loss(
                     net, x_batch, args.example_weight, dist
                 )
 
             if args.train_energy:
-                energies, x_jac = sample_energy_jac(
-                    net, device, energy_evaluator, dist
-                )
+                energies, x_jac = sample_energy_jac(net, device, energy_evaluator, dist)
                 energy_loss, energy_kl_loss, energy_jac_loss = get_energy_loss(
                     energies, x_jac, args.energy_weight
                 )
