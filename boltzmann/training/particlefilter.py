@@ -5,23 +5,27 @@ import torch
 
 class ParticleFilter:
     def __init__(
-        self, device, net, data, res_size, batch_size, energy_evaluator, step_size=1e-3
+        self,
+        device,
+        net,
+        data,
+        batch_size,
+        energy_evaluator,
+        step_size=1e-1,
+        mc_target_low=0.1,
+        mc_target_high=0.4,
     ):
         self.device = device
         self.net = net
-        self.res_size = res_size
         self.n_dim = data.shape[1]
-        self.indices = np.arange(self.res_size)
-
-        if data.shape[0] != self.res_size:
-            sampled = np.random.choice(np.arange(data.shape[0]), size=self.res_size, replace=True)
-            self.reservoir = data[sampled, :]
-        else:
-            self.reservoir = data
-
+        self.indices = np.arange(data.shape[0])
         self.batch_size = batch_size
         self.energy_evaluator = energy_evaluator
         self.step_size = step_size
+        self.mc_target_low = mc_target_low
+        self.mc_target_high = mc_target_high
+        self.reservoir = data
+        self.res_size = data.shape[0]
 
         mu = torch.zeros(self.reservoir.shape[-1] - 6, device=device)
         cov = torch.eye(self.reservoir.shape[-1] - 6, device=device)
@@ -43,7 +47,9 @@ class ParticleFilter:
 
     def sample_and_compute_losses(self):
         # Choose a random batch of configurations and convert to latent.
-        samples = torch.from_numpy(np.random.choice(self.indices, size=self.batch_size, replace=False))
+        samples = torch.from_numpy(
+            np.random.choice(self.indices, size=self.batch_size, replace=False)
+        )
         x = self.reservoir[samples, :].to(self.device)
         z, jac_forward = self.net.forward(x)
 
@@ -80,24 +86,15 @@ class ParticleFilter:
         with torch.no_grad():
             metrop = -torch.log(torch.rand(self.batch_size, device=self.device))
             accepted = torch.gt(metrop, logw_new - logw_old)
-            print("old_energy", old_energies[0, :].cpu())
-            print("prop_energy", prop_energies[0, :].cpu())
-            print("logw_new", logw_new[0].cpu())
-            print("logw_old", logw_old[0].cpu())
-            print("delta_logw", logw_new[0].cpu() - logw_old[0].cpu())
-            print(metrop[0].cpu())
-            print(accepted[0].cpu())
-            print(samples[accepted])
-            print(x_prop[accepted, :].shape)
-            print(self.reservoir[samples[accepted], :].shape)
-            self.acceptance_probs.append(torch.sum(accepted.float()).item() / self.batch_size)
-            print(self.acceptance_probs[-1], self.step_size)
+            self.acceptance_probs.append(
+                torch.sum(accepted.float()).item() / self.batch_size
+            )
             self.reservoir[samples[accepted], :] = x_prop[accepted, :].cpu()
 
         # update step size
         if len(self.acceptance_probs) >= 50:
             mean = np.mean(self.acceptance_probs[-50:])
-            if mean < 0.10:
-                self.step_size = max(1e-8, self.step_size * 0.98)
-            elif mean > 0.4:
+            if mean < self.mc_target_low:
+                self.step_size = max(1e-4, self.step_size * 0.98)
+            elif mean > self.mc_target_high:
                 self.step_size = min(1, self.step_size * 1.02)
