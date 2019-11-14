@@ -314,10 +314,11 @@ def create_dirs():
     os.makedirs("ensembles", exist_ok=True)
 
 
-def load_trajectory(pdb_path, dcd_path):
+def load_trajectory(pdb_path, dcd_path, align=False):
     t = md.load(dcd_path, top=pdb_path)
-    ind = t.topology.select("backbone")
-    t.superpose(t, frame=0, atom_indices=ind)
+    if align:
+        ind = t.topology.select("backbone")
+        t.superpose(t, frame=0, atom_indices=ind)
     return t
 
 
@@ -655,7 +656,7 @@ def train_network(args, device):
     writer = setup_writer(args)
 
     dcd_path = f"ensembles/{args.load}.dcd"
-    traj = load_trajectory(args.pdb_path, dcd_path)
+    traj = load_trajectory(args.pdb_path, dcd_path, align=False)
     traj.unitcell_lengths = None
     traj.unitcell_angles = None
 
@@ -781,7 +782,7 @@ def init_ensemble(ensemble_size, data):
 
 
 def init_network(args, device):
-    traj = load_trajectory(args.pdb_path, args.dcd_path)
+    traj = load_trajectory(args.pdb_path, args.dcd_path, align=True)
     traj.unitcell_lengths = None
     traj.unitcell_angles = None
 
