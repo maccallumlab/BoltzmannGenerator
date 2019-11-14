@@ -91,7 +91,7 @@ def parse_args():
     network_group.add_argument(
         "--spline-points",
         type=int,
-        default=8,
+        default=32,
         help="number of spline points in NSF layers (default: %(default)d)",
     )
     network_group.add_argument(
@@ -395,8 +395,12 @@ def build_affine_made(n_dim, hidden_layers, hidden_features, dropout_fraction):
 
 
 def build_nsf_unconditional(n_dim, spline_points):
-    nsf = transforms.PiecewiseQuadraticCDF(
-        [n_dim], num_bins=spline_points, tails="linear", tail_bound=5
+    nsf = transforms.PiecewiseRationalQuadraticCDF(
+        [n_dim],
+        num_bins=spline_points,
+        tails="linear",
+        tail_bound=5,
+        identity_init=True,
     )
     return [nsf]
 
