@@ -70,7 +70,7 @@ class PCATransform(nn.Module):
             V = V[:, :keep_dims]
 
             # Store the jacobian for later.
-            jac = torch.sum(torch.log(self.stds))
+            jac = -torch.sum(torch.log(self.stds))
             self.register_buffer("jac", jac)
 
             # Store the whitening / blackening matrices for later.

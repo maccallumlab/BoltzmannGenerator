@@ -119,7 +119,7 @@ class InternalCoordinateTransform(transforms.Transform):
             self._fix_dih(transformed)
             self._setup_std_dih(transformed)
             transformed[:, self.dih_indices] /= self.std_dih
-            scale_jac = (
+            scale_jac = -(
                 torch.sum(torch.log(self.std_bonds))
                 + torch.sum(torch.log(self.std_angles))
                 + torch.sum(torch.log(self.std_dih))
