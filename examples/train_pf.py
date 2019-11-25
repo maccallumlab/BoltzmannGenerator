@@ -36,6 +36,9 @@ def parse_args():
     )
     io_parent_parser.set_defaults(overwrite=False)
     io_parent_parser.add_argument("--pdb-path", required=True, help="path to pdb file")
+    io_parent_parser.add_argument(
+        "--validation", required=True, help="validation dataset name"
+    )
 
     #
     # Init parameters
@@ -46,6 +49,12 @@ def parse_args():
 
     # Init paths and filenames
     init_parser.add_argument("--dcd-path", required=True, help="path to dcd file")
+    init_parser.add_argument(
+        "--validation-fraction",
+        default=0.05,
+        type=float,
+        help="fraction of dataset to use for validation (default: %(default)g)",
+    )
 
     # Network parameters
     network_group = init_parser.add_argument_group("network parameters")
@@ -274,9 +283,12 @@ def setup_custom_scalars(args, writer):
                 "example loss": ["Multiline", ["weighted_example_total_loss"]],
             },
             "Example Losses (unweighted)": {
-                "total": ["Multiline", ["example_total_loss"]],
-                "ml": ["Multiline", ["example_ml_loss"]],
-                "jac": ["Multiline", ["example_jac_loss"]],
+                "total": [
+                    "Multiline",
+                    ["example_total_loss", "val_example_total_loss"],
+                ],
+                "ml": ["Multiline", ["example_ml_loss", "val_example_ml_loss"]],
+                "jac": ["Multiline", ["example_jac_loss", "val_example_jac_loss"]],
             },
             "Energy Losses (unweighted)": {
                 "total": ["Multiline", ["energy_total_loss"]],
@@ -312,6 +324,7 @@ def create_dirs():
     os.makedirs("models", exist_ok=True)
     os.makedirs("gen_samples", exist_ok=True)
     os.makedirs("ensembles", exist_ok=True)
+    os.makedirs("validation", exist_ok=True)
 
 
 def load_trajectory(pdb_path, dcd_path, align=False):
@@ -663,9 +676,25 @@ def train_network(args, device):
     n_dim = traj.xyz.shape[1] * 3
     ensemble = traj.xyz.reshape(-1, n_dim)
     ensemble = torch.from_numpy(ensemble.astype("float32"))
-    print(f"Ensemble has size {ensemble.shape[0]} x {ensemble.shape[1]}.")
+    print(f"Ensemble has size {ensemble.shape[0]} x {ensemble.shape[1]}.\n")
+
+    validation_dcd_path = f"validation/{args.validation}.dcd"
+    valid_traj = load_trajectory(args.pdb_path, validation_dcd_path, align=False)
+    n_valid_dim = valid_traj.xyz.shape[1] * 3
+    validation_data = valid_traj.xyz.reshape(-1, n_valid_dim)
+    validation_data = torch.from_numpy(validation_data.astype("float32")).to(device)
+    validation_indices = np.arange(validation_data.shape[0])
+    print(
+        f"Validation has size {validation_data.shape[0]} x {validation_data.shape[1]}.\n"
+    )
 
     net = load_network(f"models/{args.load}.pkl", device=device)
+
+    mu = torch.zeros(validation_data.shape[-1] - 6, device=device)
+    cov = torch.eye(validation_data.shape[-1] - 6, device=device)
+    latent_distribution = distributions.MultivariateNormal(
+        mu, covariance_matrix=cov
+    ).expand((args.batch_size,))
 
     optimizer = setup_optimizer(
         net=net,
@@ -719,6 +748,26 @@ def train_network(args, device):
             scheduler.step(epoch)
 
             if epoch % args.log_freq == 0:
+                net.eval()
+
+                # Compute our validation loss
+                with torch.no_grad():
+                    sample_inidices = torch.from_numpy(
+                        np.random.choice(
+                            validation_indices, args.batch_size, replace=True
+                        )
+                    )
+                    valid_sample = validation_data[sample_inidices, :]
+                    z_valid, valid_jac = net.forward(valid_sample)
+                    valid_ml = -torch.mean(latent_distribution.log_prob(z_valid))
+                    valid_jac = -torch.mean(valid_jac)
+                    valid_loss = valid_ml + valid_jac
+                    writer.add_scalar("val_example_ml_loss", valid_ml.item(), epoch)
+                    writer.add_scalar("val_example_jac_loss", valid_jac.item(), epoch)
+                    writer.add_scalar(
+                        "val_example_total_loss", valid_loss.item(), epoch
+                    )
+
                 # Output our training losses
                 writer.add_scalar(
                     "acceptance_rate", trainer.acceptance_probs[-1], epoch
@@ -770,7 +819,7 @@ def train_network(args, device):
 def init_ensemble(ensemble_size, data):
     if data.shape[0] != ensemble_size:
         print(
-            f"Generating ensemble by sampling from {data.shape[0]} to {ensemble_size}."
+            f"Generating ensemble by sampling from {data.shape[0]} to {ensemble_size}.\n"
         )
         sampled = np.random.choice(
             np.arange(data.shape[0]), ensemble_size, replace=True
@@ -787,8 +836,10 @@ def init_network(args, device):
     traj.unitcell_angles = None
 
     n_dim = traj.xyz.shape[1] * 3
-    training_data = traj.xyz.reshape(-1, n_dim)
-    training_data = torch.from_numpy(training_data.astype("float32"))
+    training_data_npy = traj.xyz.reshape(-1, n_dim)
+    # Shuffle the training data for later training / test split
+    np.random.shuffle(training_data_npy)
+    training_data = torch.from_numpy(training_data_npy.astype("float32"))
     print(
         f"Trajectory loaded with size {training_data.shape[0]} x {training_data.shape[1]}"
     )
@@ -811,9 +862,16 @@ def init_network(args, device):
     )
 
     # We do this just to test if we can.
-    openmm_context = get_openmm_context(args.pdb_path)
+    openmm_context_ = get_openmm_context(args.pdb_path)
 
-    # If necessary, resample the data to match our desired ensemble size.
+    # Set aside our validation dataset and create our initial ensemble.
+    n_valid = int(training_data.shape[0] * args.validation_fraction)
+    n_train = training_data.shape[0] - n_valid
+    print(
+        f"Splitting data into training ({n_train} points) and validation ({n_valid} points) sets.\n"
+    )
+    validation_data = training_data[:n_valid, :]
+    training_data = training_data[n_valid:, :]
     ensemble = init_ensemble(args.ensemble_size, training_data)
 
     # Save everything
@@ -822,6 +880,10 @@ def init_network(args, device):
     x = x.reshape(args.ensemble_size, -1, 3)
     traj.xyz = x
     traj.save(f"ensembles/{args.save}.dcd")
+    y = validation_data.cpu().detach().numpy()
+    y = y.reshape(n_valid, -1, 3)
+    traj.xyz = y
+    traj.save(f"validation/{args.validation}.dcd")
 
 
 if __name__ == "__main__":
