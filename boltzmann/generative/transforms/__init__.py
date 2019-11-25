@@ -60,3 +60,4 @@ from .standard import (
 
 from .reshape import SqueezeTransform, ReshapeTransform
 from .conv import OneByOneConvolution
+from .noise import ForwardNoiseTransform
