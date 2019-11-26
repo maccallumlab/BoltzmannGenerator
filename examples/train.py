@@ -6,6 +6,7 @@ from boltzmann import protein
 from boltzmann.generative import transforms
 from boltzmann import nn
 from boltzmann import utils
+from boltzmann import training
 from simtk import openmm as mm
 from simtk.openmm import app
 import numpy as np
@@ -25,19 +26,164 @@ def parse_args():
     parser = argparse.ArgumentParser(
         prog="train.py", description="Train generative model of molecular conformation."
     )
+    subparsers = parser.add_subparsers(dest="action")
 
-    path_group = parser.add_argument_group("paths and filenames")
-    # Paths and filenames
-    path_group.add_argument("--pdb-path", required=True, help="path to pdb file")
-    path_group.add_argument("--dcd-path", required=True, help="path to dcd file")
-    path_group.add_argument("--output-name", required=True, help="base name for output")
-    path_group.add_argument(
+    # Common io arguments
+    io_parent_parser = argparse.ArgumentParser(add_help=False)
+    io_parent_parser.add_argument("--save", required=True, help="basename for output")
+    io_parent_parser.add_argument(
         "--overwrite", action="store_true", help="overwrite previous run"
     )
-    path_group.set_defaults(overwrite=False)
+    io_parent_parser.set_defaults(overwrite=False)
+    io_parent_parser.add_argument("--pdb-path", required=True, help="path to pdb file")
+    io_parent_parser.add_argument(
+        "--validation", required=True, help="validation dataset name"
+    )
+
+    #
+    # Init parameters
+    #
+    init_parser = subparsers.add_parser(
+        "init", help="initialize a new network", parents=[io_parent_parser]
+    )
+
+    # Init paths and filenames
+    init_parser.add_argument("--dcd-path", required=True, help="path to dcd file")
+    init_parser.add_argument(
+        "--validation-fraction",
+        default=0.05,
+        type=float,
+        help="fraction of dataset to use for validation (default: %(default)g)",
+    )
+
+    # Network parameters
+    network_group = init_parser.add_argument_group("network parameters")
+    network_group.add_argument(
+        "--model-type",
+        default="nsf-coupling",
+        choices=[
+            "affine-coupling",
+            "affine-made",
+            "nsf-unconditional",
+            "nsf-coupling",
+            "nsf-made",
+        ],
+        help="type of model (default: %(default)s)",
+    )
+    network_group.add_argument(
+        "--coupling-layers",
+        type=int,
+        default=8,
+        help="number of coupling layers (default: %(default)d)",
+    )
+    network_group.add_argument(
+        "--hidden-features",
+        type=int,
+        default=128,
+        help="number of hidden features in each layer (default: %(default)d)",
+    )
+    network_group.add_argument(
+        "--hidden-layers",
+        type=int,
+        default=2,
+        help="number of hidden layers (default: %(default)d)",
+    )
+    network_group.add_argument(
+        "--spline-points",
+        type=int,
+        default=32,
+        help="number of spline points in NSF layers (default: %(default)d)",
+    )
+    network_group.add_argument(
+        "--dropout-fraction",
+        type=float,
+        default=0.0,
+        help="strength of dropout (default: %(default)g)",
+    )
+    network_group.add_argument(
+        "--ensemble-size",
+        type=int,
+        default=100_000,
+        help="size of configuration ensemble (default: %(default)d)",
+    )
+
+    # Pretrainsformation parameters
+    pretrans_group = init_parser.add_argument_group("pretransformation parameters")
+    pretrans_group.add_argument(
+        "--pretrans-type",
+        default="quad-cdf",
+        choices=["quad-cdf", "none"],
+        help="pre-transform inputs before neural network (default: %(default)s)",
+    )
+    pretrans_group.add_argument(
+        "--pretrans-epochs",
+        type=int,
+        default=500,
+        help="number of training epochs for pre-transformation layer (default: %(default)d)",
+    )
+    pretrans_group.add_argument(
+        "--pretrans-lr",
+        type=float,
+        default=1e-2,
+        help="learning rate for pretransform training (default: %(default)g)",
+    )
+    pretrans_group.add_argument(
+        "--pretrans-batch-size",
+        type=int,
+        default=1024,
+        help="batch size for pretransformation training (default: %(default)g)",
+    )
+
+    #
+    # Training Parameters
+    #
+    train_parser = subparsers.add_parser(
+        "train", help="train a network", parents=[io_parent_parser]
+    )
+
+    # Training paths
+    train_parser.add_argument(
+        "--load", required=True, help="basename of network to load"
+    )
+
+    # Loss Function parameters
+    loss_group = train_parser.add_argument_group("loss function parameters")
+    loss_group.add_argument(
+        "--example-weight",
+        type=float,
+        default=1.0,
+        help="weight for training by example (default: %(default)g)",
+    )
+    loss_group.add_argument(
+        "--energy-weight",
+        type=float,
+        default=0.0,
+        help="weight for training by energy (default: %(default)g)",
+    )
+
+    # Energy evaluation parameters
+    energy_group = train_parser.add_argument_group("parameters for energy function")
+    energy_group.add_argument(
+        "--temperature",
+        type=float,
+        default=298.0,
+        help="temperature (default: %(default)g)",
+    )
+    energy_group.add_argument(
+        "--energy-max",
+        type=float,
+        default=1e20,
+        help="maximum energy (default: %(default)g)",
+    )
+    energy_group.add_argument(
+        "--energy-high",
+        type=float,
+        default=1e10,
+        help="log transform energies above this value (default: %(default)g)",
+    )
 
     # Optimization parameters
-    optimizer_group = parser.add_argument_group("optimization parameters")
+    optimizer_group = train_parser.add_argument_group("optimization parameters")
     optimizer_group.add_argument(
         "--epochs",
         type=int,
@@ -71,7 +217,7 @@ def parse_args():
     optimizer_group.add_argument(
         "--final-lr",
         type=float,
-        default=1e-5,
+        default=1e-4,
         help="final learning rate (default: %(default)g)",
     )
     optimizer_group.add_argument(
@@ -81,15 +227,9 @@ def parse_args():
         help="strength of weight decay (default: %(default)g)",
     )
     optimizer_group.add_argument(
-        "--dropout-fraction",
-        type=float,
-        default=0.5,
-        help="strength of dropout (default: %(default)g)",
-    )
-    optimizer_group.add_argument(
         "--max-gradient",
         type=float,
-        default=100.0,
+        default=1000.0,
         help="maximum allowed gradient (default: %(default)g)",
     )
     optimizer_group.add_argument(
@@ -98,226 +238,51 @@ def parse_args():
         default=10,
         help="how often to update tensorboard (default: %(default)d)",
     )
-    optimizer_group.add_argument(
-        "--fold-validation",
-        type=float,
-        default=10.0,
-        help="how much data to set aside for training (default: %(default)d)",
-    )
-
-    pretrans_group = parser.add_argument_group("pretransformation parameters")
-    pretrans_group.add_argument(
-        "--pretrans-type",
-        default="quad-cdf",
-        choices=["quad-cdf", "none"],
-        help="pre-transform inputs before neural network (default: %(default)s)",
-    )
-    pretrans_group.add_argument(
-        "--pretrans-epochs",
-        type=int,
-        default=500,
-        help="number of training epochs for pre-transformation layer (default: %(default)d)",
-    )
-    pretrans_group.add_argument(
-        "--pretrans-lr",
-        type=float,
-        default=1e-2,
-        help="learning rate for pretransform training (default: %(default)g)",
-    )
-
-    # Network parameters
-    network_group = parser.add_argument_group("network parameters")
-    network_group.add_argument(
-        "--load-network", default=None, help="load previously trained network"
-    )
-    network_group.add_argument(
-        "--model-type",
-        default="nsf-coupling",
-        choices=[
-            "affine-coupling",
-            "affine-made",
-            "nsf-unconditional",
-            "nsf-coupling",
-            "nsf-made",
-        ],
-        help="type of model (default: %(default)s)",
-    )
-    network_group.add_argument(
-        "--coupling-layers",
-        type=int,
-        default=4,
-        help="number of coupling layers (default: %(default)d)",
-    )
-    network_group.add_argument(
-        "--hidden-features",
-        type=int,
-        default=128,
-        help="number of hidden features in each layer (default: %(default)d)",
-    )
-    network_group.add_argument(
-        "--hidden-layers",
-        type=int,
-        default=2,
-        help="number of hidden layers (default: %(default)d)",
-    )
-    network_group.add_argument(
-        "--spline-points",
-        type=int,
-        default=8,
-        help="number of spline points in NSF layers (default: %(default)d)",
-    )
-
-    # Loss Function parameters
-    loss_group = parser.add_argument_group("loss function parameters")
-    loss_group.add_argument(
-        "--training-type",
-        default="example",
-        choices=["example", "energy", "mixed"],
-        help="type of loss function ot use (default: %(default)s)",
-    )
-    loss_group.add_argument(
-        "--example-weight",
-        type=float,
-        default=1.0,
-        help="weight for training by example (default: %(default)g)",
-    )
-    loss_group.add_argument(
-        "--example-noise",
-        type=float,
-        default=0.0,
-        help="amount of noise to add to cartesian coords(default %(default)g nm)",
-    )
-    loss_group.add_argument(
-        "--energy-weight",
-        type=float,
-        default=1.0,
-        help="weight for training by energy (default: %(default)g)",
-    )
-
-    # Energy evaluation parameters
-    energy_group = parser.add_argument_group("parameters for energy function")
-    energy_group.add_argument(
-        "--temperature",
-        type=float,
-        default=298.0,
-        help="temperature (default: %(default)g)",
-    )
-    energy_group.add_argument(
-        "--energy-max",
-        type=float,
-        default=1e20,
-        help="maximum energy (default: %(default)g)",
-    )
-    energy_group.add_argument(
-        "--energy-high",
-        type=float,
-        default=1e10,
-        help="log transform energies above this value (default: %(default)g)",
-    )
 
     args = parser.parse_args()
-    if args.training_type == "example":
-        args.train_example = True
-        args.train_energy = False
-    elif args.training_type == "energy":
-        args.train_example = False
-        args.train_energy = True
-    elif args.training_type == "mixed":
-        args.train_example = True
-        args.train_energy = True
-    else:
-        raise NotImplementedError()
 
     return args
 
 
-def setup_writers(args):
-    train_writer = SummaryWriter(
-        log_dir=f"runs/{args.output_name}_train", purge_step=0, flush_secs=30
-    )
-    test_writer = SummaryWriter(
-        log_dir=f"runs/{args.output_name}_test", purge_step=0, flush_secs=30
-    )
-    setup_custom_scalars(args, train_writer)
-    setup_custom_scalars(args, test_writer)
-    return train_writer, test_writer
+def setup_writer(args):
+    writer = SummaryWriter(log_dir=f"runs/{args.save}", purge_step=0, flush_secs=30)
+    setup_custom_scalars(args, writer)
+    return writer
 
 
 def setup_custom_scalars(args, writer):
     writer.add_custom_scalars(
         {
-            "total_losses": {
-                "total_loss": ["Multiline", ["total_loss", "total_loss"]],
-                "energy_loss": [
+            "Sampling": {
+                "acceptance rate": ["Multiline", ["acceptance_rate"]],
+                "step size": ["Multiline", ["step_size"]],
+                "gradient norm": ["Multiline", ["gradient_norm"]],
+            },
+            "Total Losses (weighted)": {
+                "total loss": ["Multiline", ["total_loss"]],
+                "energy loss": ["Multiline", ["weighted_energy_total_loss"]],
+                "example loss": ["Multiline", ["weighted_example_total_loss"]],
+            },
+            "Example Losses (unweighted)": {
+                "total": [
                     "Multiline",
-                    ["energy_total_loss", "energy_total_loss"],
+                    ["example_total_loss", "val_example_total_loss"],
                 ],
-                "example_loss": [
-                    "Multiline",
-                    ["example_total_loss", "example_total_loss"],
-                ],
-                "gradient_norm": ["Multiline", ["gradient_norm"]],
+                "ml": ["Multiline", ["example_ml_loss", "val_example_ml_loss"]],
+                "jac": ["Multiline", ["example_jac_loss", "val_example_jac_loss"]],
             },
-            "example_losses": {
-                "total": ["Multiline", ["example_total_loss", "example_total_loss"]],
-                "ml": ["Multiline", ["example_ml_loss", "example_ml_loss"]],
-                "jac": ["Multiline", ["example_jac_loss", "example_jac_loss"]],
+            "Energy Losses (unweighted)": {
+                "total": ["Multiline", ["energy_total_loss"]],
+                "ml": ["Multiline", ["energy_kl_loss"]],
+                "jac": ["Multiline", ["energy_jac_loss"]],
             },
-            "energy_losses": {
-                "total": ["Multiline", ["energy_total_loss", "energy_total_loss"]],
-                "ml": ["Multiline", ["energy_kl_loss", "energy_kl_loss"]],
-                "jac": ["Multiline", ["energy_jac_loss", "energy_jac_loss"]],
-            },
-            "energies": {
+            "Generative Energies": {
                 "minimum": ["Multiline", ["minimum_energy"]],
                 "mean": ["Multiline", ["mean_energy"]],
                 "median": ["Multiline", ["median_energy"]],
             },
         }
     )
-
-
-def write_final_stats(
-    args, loss, example_loss, energy_loss, example_train, energy_train
-):
-    writer = SummaryWriter(
-        log_dir=f"results/{args.output_name}_results", purge_step=0, flush_secs=30
-    )
-    h_params = {
-        "batch_size": args.batch_size,
-        "epochs": args.epochs,
-        "dropout_prob": args.dropout_fraction,
-        "weight_decay": args.weight_decay,
-        "init_lr": args.init_lr,
-        "final_lr": args.final_lr,
-        "wamup_epochs": args.warmup_epochs,
-        "warmup_factor": args.warmup_factor,
-        "max_gradient": args.max_gradient,
-        "coupling_layers": args.coupling_layers,
-        "model_type": args.model_type,
-        "spline_points": args.spline_points,
-        "hidden_features": args.hidden_features,
-        "hidden_layers": args.hidden_layers,
-        "train_example": args.train_example,
-        "example_weight": args.example_weight,
-        "example_noise": args.example_noise,
-        "train_energy": args.train_energy,
-        "energy_weight": args.energy_weight,
-        "energy_max": args.energy_max,
-        "energy_high": args.energy_high,
-    }
-
-    metrics = {
-        "validation_loss": loss,
-        "energy_loss": energy_loss,
-        "example_loss": example_loss,
-    }
-    if args.train_example:
-        metrics["example_loss_train"] = example_train
-    if args.train_energy:
-        metrics["energy_loss_train"] = energy_train
-
-    writer.add_hparams(h_params, metrics)
 
 
 #
@@ -328,28 +293,27 @@ def write_final_stats(
 def delete_run(name):
     if os.path.exists(f"models/{name}.pkl"):
         os.remove(f"models/{name}.pkl")
-    if os.path.exists(f"sample_traj/{name}.pdb"):
-        os.remove(f"sample_traj/{name}.pdb")
+    if os.path.exists(f"gen_samples/{name}.pdb"):
+        os.remove(f"gen_samples/{name}.pdb")
+    if os.path.exists(f"ensembles/{name}.dcd"):
+        os.remove(f"ensembles/{name}.dcd")
     if os.path.exists(f"runs/{name}"):
         shutil.rmtree(f"runs/{name}")
 
 
 def create_dirs():
     os.makedirs("models", exist_ok=True)
-    os.makedirs("sample_traj", exist_ok=True)
+    os.makedirs("gen_samples", exist_ok=True)
+    os.makedirs("ensembles", exist_ok=True)
+    os.makedirs("validation", exist_ok=True)
 
 
-def load_trajectory(pdb_path, dcd_path, noise_level):
-    print("Loading trajectory")
-    t = md.load(args.dcd_path, top=args.pdb_path)
-    ind = t.topology.select("backbone")
-    t_noise = t.slice(...)
-    t_noise.xyz = t_noise.xyz + np.random.normal(
-        loc=0.0, scale=noise_level, size=t_noise.xyz.shape
-    )
-    t.superpose(t, frame=0, atom_indices=ind)
-    t_noise.superpose(t_noise, frame=0, atom_indices=ind)
-    return t, t_noise
+def load_trajectory(pdb_path, dcd_path, align=False):
+    t = md.load(dcd_path, top=pdb_path)
+    if align:
+        ind = t.topology.select("backbone")
+        t.superpose(t, frame=0, atom_indices=ind)
+    return t
 
 
 def load_network(path, device):
@@ -412,8 +376,12 @@ def build_affine_made(n_dim, hidden_layers, hidden_features, dropout_fraction):
 
 
 def build_nsf_unconditional(n_dim, spline_points):
-    nsf = transforms.PiecewiseQuadraticCDF(
-        [n_dim], num_bins=spline_points, tails="linear", tail_bound=5
+    nsf = transforms.PiecewiseRationalQuadraticCDF(
+        [n_dim],
+        num_bins=spline_points,
+        tails="linear",
+        tail_bound=15,
+        identity_init=True,
     )
     return [nsf]
 
@@ -437,7 +405,7 @@ def build_nsf_coupling(
                 use_batch_norm=False,
             ),
             tails="linear",
-            tail_bound=5,
+            tail_bound=15,
             num_bins=spline_points,
             apply_unconditional_transform=False,
         )
@@ -452,7 +420,7 @@ def build_nsf_coupling(
                 use_batch_norm=False,
             ),
             tails="linear",
-            tail_bound=5,
+            tail_bound=15,
             num_bins=spline_points,
             apply_unconditional_transform=False,
         )
@@ -473,7 +441,7 @@ def build_nsf_made(
         use_batch_norm=False,
         num_bins=spline_points,
         tails="linear",
-        tail_bound=5,
+        tail_bound=15,
     )
     return [made]
 
@@ -497,20 +465,20 @@ def build_network(
     training_data = training_data.to(device)
 
     print("Creating network")
-    layers = []
+    head_layers = []
 
     # Create the mixed transofrm layer
     pca_block = protein.PCABlock("backbone", True)
     mixed = protein.MixedTransform(n_dim, topology, [pca_block], training_data)
-    layers.append(mixed)
+    head_layers.append(mixed)
 
     if pretrans_type == "quad-cdf":
         print()
         print("Pre-training unconditional NSF layer")
         print()
         unconditional = build_nsf_unconditional(n_dim - 6, spline_points)[0]
-        layers.append(unconditional)
-        unconditional_net = transforms.CompositeTransform(layers).to(device)
+        head_layers.append(unconditional)
+        unconditional_net = transforms.CompositeTransform(head_layers).to(device)
         pre_train_unconditional_nsf(
             unconditional_net,
             device,
@@ -525,6 +493,11 @@ def build_network(
         unconditional.unnormalized_heights.requires_grad_(False)
         unconditional.unnormalized_widths.requires_grad_(False)
 
+    head = transforms.CompositeTransform(head_layers).to(device)
+
+    middle = transforms.NoiseTransform(0.5)
+    
+    tail_layers = []
     if model_type == "affine-coupling":
         new_layers = build_affine_coupling(
             n_dim - 6, n_coupling, hidden_layers, hidden_features, dropout_fraction
@@ -551,8 +524,10 @@ def build_network(
     else:
         raise RuntimeError()
 
-    layers.extend(new_layers)
-    net = transforms.CompositeTransform(layers).to(device)
+    tail_layers.extend(new_layers)
+    tail = transforms.CompositeTransform(tail_layers).to(device)
+
+    net = transforms.SelectiveMiddleComposite(head, middle, tail)
     print()
     print("Network constructed.")
     print(net)
@@ -631,19 +606,6 @@ def setup_scheduler(optimizer, init_lr, final_lr, epochs, warmup_epochs, warmup_
 #
 
 
-def get_batch_weighted_ml_loss(net, x_batch, example_weight, dist):
-    z, z_jac = net.forward(x_batch)
-
-    ll = 0.5 * torch.sum(z ** 2, dim=1) - z_jac
-    w = torch.exp(ll - torch.max(ll))
-    w_total = torch.sum(w)
-
-    example_ml_loss = torch.sum(w * dist.log_prob(z)) / w_total * example_weight
-    example_jac_loss = -torch.sum(w * z_jac) / w_total * example_weight
-    example_loss = example_ml_loss + example_jac_loss
-    return example_loss, example_ml_loss, example_jac_loss
-
-
 def get_ml_loss(net, x_batch, example_weight, dist):
     z, z_jac = net.forward(x_batch)
 
@@ -651,20 +613,6 @@ def get_ml_loss(net, x_batch, example_weight, dist):
     example_jac_loss = -torch.mean(z_jac) * example_weight
     example_loss = example_ml_loss + example_jac_loss
     return example_loss, example_ml_loss, example_jac_loss
-
-
-def sample_energy_jac(net, device, energy_evaluator, dist):
-    z_batch = dist.sample()
-    x, x_jac = net.inverse(z_batch)
-    energies = energy_evaluator(x)
-    return energies, x_jac
-
-
-def get_energy_loss(energies, jacobians, energy_weight):
-    energy_kl_loss = torch.mean(energies) * energy_weight
-    energy_jac_loss = -torch.mean(jacobians) * energy_weight
-    energy_loss = energy_kl_loss + energy_jac_loss
-    return energy_loss, energy_kl_loss, energy_jac_loss
 
 
 #
@@ -697,9 +645,11 @@ def pre_train_unconditional_nsf(
         for epoch in progress:
             net.train()
 
-            index_batch = np.random.choice(indices, args.batch_size, replace=True)
+            index_batch = np.random.choice(
+                indices, args.pretrans_batch_size, replace=True
+            )
             x_batch = training_data[index_batch, :]
-            loss, _, _ = get_ml_loss(net, x_batch, args.example_weight, dist)
+            loss, _, _ = get_ml_loss(net, x_batch, 1.0, dist)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -707,37 +657,29 @@ def pre_train_unconditional_nsf(
                 progress.set_postfix(loss=f"{loss.item():8.3f}")
 
 
-def run_training(args, device):
-    train_writer, test_writer = setup_writers(args)
+def train_network(args, device):
+    writer = setup_writer(args)
 
-    traj, traj_noise = load_trajectory(args.pdb_path, args.dcd_path, args.example_noise)
+    dcd_path = f"ensembles/{args.load}.dcd"
+    traj = load_trajectory(args.pdb_path, dcd_path, align=False)
+    traj.unitcell_lengths = None
+    traj.unitcell_angles = None
+
     n_dim = traj.xyz.shape[1] * 3
-    training_data_npy = traj.xyz.reshape(-1, n_dim)
-    training_data = torch.from_numpy(training_data_npy.astype("float32"))
-    training_data_noise_npy = traj_noise.xyz.reshape(-1, n_dim)
-    training_data_noise = torch.from_numpy(training_data_noise_npy.astype("float32"))
-    print("Trajectory loaded")
-    print("Data has size:", training_data.shape)
+    ensemble = traj.xyz.reshape(-1, n_dim)
+    ensemble = torch.from_numpy(ensemble.astype("float32"))
+    print(f"Ensemble has size {ensemble.shape[0]} x {ensemble.shape[1]}.\n")
 
-    if args.load_network:
-        net = load_network(f"models/{args.load_network}.pkl", device=device)
-    else:
-        net = build_network(
-            n_dim=n_dim,
-            model_type=args.model_type,
-            topology=traj.topology,
-            training_data=training_data_noise,
-            n_coupling=args.coupling_layers,
-            spline_points=args.spline_points,
-            hidden_features=args.hidden_features,
-            hidden_layers=args.hidden_layers,
-            dropout_fraction=args.dropout_fraction,
-            pretrans_type=args.pretrans_type,
-            pretrans_epochs=args.pretrans_epochs,
-            pretrans_lr=args.pretrans_lr,
-            pretrans_batch_size=args.batch_size,
-            device=device,
-        )
+    validation_dcd_path = f"validation/{args.validation}.dcd"
+    valid_traj = load_trajectory(args.pdb_path, validation_dcd_path, align=False)
+    n_valid_dim = valid_traj.xyz.shape[1] * 3
+    validation_data = valid_traj.xyz.reshape(-1, n_valid_dim)
+    validation_data = torch.from_numpy(validation_data.astype("float32")).to(device)
+    print(
+        f"Validation has size {validation_data.shape[0]} x {validation_data.shape[1]}.\n"
+    )
+
+    net = load_network(f"models/{args.load}.pkl", device=device)
 
     optimizer = setup_optimizer(
         net=net,
@@ -762,50 +704,18 @@ def run_training(args, device):
         device=device,
     )
 
-    # Shuffle the training data
-    n = training_data_npy.shape[0]
-    n_val = int(n / args.fold_validation)
-    np.random.shuffle(training_data_npy)
-
-    # Split the training and validation sets
-    val_data = torch.as_tensor(training_data_npy[:n_val, :], device=device)
-    train_data = torch.as_tensor(training_data_npy[n_val:, :], device=device)
-    indices = np.arange(train_data.shape[0])
-    indices_val = np.arange(val_data.shape[0])
-
-    mu = torch.zeros(train_data.shape[-1] - 6, device=device)
-    cov = torch.eye(train_data.shape[-1] - 6, device=device)
-    dist = distributions.MultivariateNormal(mu, covariance_matrix=cov).expand(
-        (args.batch_size,)
-    )
+    trainer = MixedLossTrainer(net, device, ensemble, validation_data, args.batch_size, energy_evaluator)
 
     with tqdm(range(args.epochs)) as progress:
         for epoch in progress:
             net.train()
 
-            if args.train_example:
-                index_batch = np.random.choice(indices, args.batch_size, replace=True)
-                x_batch = train_data[index_batch, :]
-                if args.example_noise > 0:
-                    x_batch = x_batch + torch.normal(
-                        0, args.example_noise, size=x_batch.shape, device=device
-                    )
-                example_loss, example_ml_loss, example_jac_loss = get_ml_loss(
-                    net, x_batch, args.example_weight, dist
-                )
+            trainer.compute_training_losses()
 
-            if args.train_energy:
-                energies, x_jac = sample_energy_jac(net, device, energy_evaluator, dist)
-                energy_loss, energy_kl_loss, energy_jac_loss = get_energy_loss(
-                    energies, x_jac, args.energy_weight
-                )
-
-            if args.train_example and args.train_energy:
-                loss = example_loss + energy_loss
-            elif args.train_example:
-                loss = example_loss
-            else:
-                loss = energy_loss
+            loss = (
+                trainer.forward_loss * args.example_weight
+                + trainer.inverse_loss * args.energy_weight
+            )
 
             optimizer.zero_grad()
             loss.backward()
@@ -813,115 +723,53 @@ def run_training(args, device):
             optimizer.step()
             scheduler.step(epoch)
 
-            if epoch % args.log_freq == 0:
+            validation_step = (epoch % args.log_freq == 0)
+            if validation_step:
                 net.eval()
+                trainer.compute_validation_losses()
+                writer.add_scalar("val_example_ml_loss", trainer.val_forward_ml.item(), epoch)
+                writer.add_scalar("val_example_jac_loss", trainer.val_forward_jac.item(), epoch)
+                writer.add_scalar(
+                    "val_example_total_loss", trainer.val_forward_loss.item(), epoch
+                )
 
                 # Output our training losses
-                train_writer.add_scalar("total_loss", loss.item(), epoch)
-                train_writer.add_scalar("gradient_norm", gradient_norm, epoch)
-                if args.train_example:
-                    train_writer.add_scalar(
-                        "example_ml_loss", example_ml_loss.item(), epoch
-                    )
-                    train_writer.add_scalar(
-                        "example_jac_loss", example_jac_loss.item(), epoch
-                    )
-                    train_writer.add_scalar(
-                        "example_total_loss", example_loss.item(), epoch
-                    )
-                if args.train_energy:
-                    train_writer.add_scalar(
-                        "energy_kl_loss", energy_kl_loss.item(), epoch
-                    )
-                    train_writer.add_scalar(
-                        "energy_jac_loss", energy_jac_loss.item(), epoch
-                    )
-                    train_writer.add_scalar(
-                        "energy_total_loss", energy_loss.item(), epoch
-                    )
+                # writer.add_scalar(
+                #     "acceptance_rate", trainer.acceptance_probs[-1], epoch
+                # )
+                # writer.add_scalar("step_size", trainer.step_size, epoch)
+                writer.add_scalar("total_loss", loss.item(), epoch)
+                writer.add_scalar("gradient_norm", gradient_norm, epoch)
+                writer.add_scalar("example_ml_loss", trainer.forward_ml, epoch)
+                writer.add_scalar("example_jac_loss", trainer.forward_jac, epoch)
+                writer.add_scalar("example_total_loss", trainer.forward_loss, epoch)
+                writer.add_scalar(
+                    "weighted_example_total_loss",
+                    trainer.forward_loss * args.example_weight,
+                    epoch,
+                )
+                writer.add_scalar("energy_kl_loss", trainer.inverse_kl, epoch)
+                writer.add_scalar("energy_jac_loss", trainer.inverse_jac, epoch)
+                writer.add_scalar("energy_total_loss", trainer.inverse_loss, epoch)
+                writer.add_scalar(
+                    "weighted_energy_total_loss",
+                    trainer.inverse_loss * args.energy_weight,
+                    epoch,
+                )
+                writer.add_scalar("minimum_energy", trainer.min_energy.item(), epoch)
+                writer.add_scalar("median_energy", trainer.median_energy.item(), epoch)
+                writer.add_scalar("mean_energy", trainer.mean_energy.item(), epoch)
 
-                # Compute our validation losses
-                with torch.no_grad():
-                    # Compute the example validation loss
-                    index_val = np.random.choice(
-                        indices_val, args.batch_size, replace=True
-                    )
-                    x_val = val_data[index_val, :]
-                    example_loss_val, example_ml_loss_val, example_jac_loss_val = get_ml_loss(
-                        net, x_val, args.example_weight, dist
-                    )
-
-                    # Compute the energy validation loss
-                    val_energies, jac_val = sample_energy_jac(
-                        net, device, energy_evaluator, dist
-                    )
-                    energy_loss_val, energy_kl_loss_val, energy_jac_loss_val = get_energy_loss(
-                        val_energies, jac_val, args.energy_weight
-                    )
-
-                    # Compute the overall validation loss
-                    if args.train_example and args.train_energy:
-                        loss_val = example_loss_val + energy_loss_val
-                    elif args.train_example:
-                        loss_val = example_loss_val
-                    else:
-                        loss_val = energy_loss_val
-
-                    progress.set_postfix(
-                        loss=f"{loss.item():8.3f}", val_loss=f"{loss_val.item():8.3f}"
-                    )
-
-                    test_writer.add_scalar("total_loss", loss_val.item(), epoch)
-                    test_writer.add_scalar(
-                        "example_ml_loss", example_ml_loss_val.item(), epoch
-                    )
-                    test_writer.add_scalar(
-                        "example_jac_loss", example_jac_loss_val.item(), epoch
-                    )
-                    test_writer.add_scalar(
-                        "example_total_loss", example_loss_val.item(), epoch
-                    )
-                    test_writer.add_scalar(
-                        "energy_kl_loss", energy_kl_loss_val.item(), epoch
-                    )
-                    test_writer.add_scalar(
-                        "energy_jac_loss", energy_jac_loss_val.item(), epoch
-                    )
-                    test_writer.add_scalar(
-                        "energy_total_loss", energy_loss_val.item(), epoch
-                    )
-                    test_writer.add_scalar(
-                        "mean_energy", torch.mean(val_energies).item(), epoch
-                    )
-                    test_writer.add_scalar(
-                        "median_energy", torch.median(val_energies).item(), epoch
-                    )
-                    test_writer.add_scalar(
-                        "minimum_energy", torch.min(val_energies).item(), epoch
-                    )
+                progress.set_postfix(loss=f"{loss.item():8.3f}")
 
     # Save our final model
-    torch.save(net, f"models/{args.output_name}.pkl")
+    torch.save(net, f"models/{args.save}.pkl")
 
-    # Log our final losses to the console
-    print("Final loss:", loss.item())
-    if args.train_example:
-        print("Final example loss:", example_loss.item())
-    if args.train_energy:
-        print("Final energy loss:", energy_loss.item())
-    print("Final validation loss:", loss_val.item())
-    print("Final validation example loss:", example_loss_val.item())
-    print("Final validation energy loss:", energy_loss_val.item())
-
-    # Write our final stats
-    write_final_stats(
-        args,
-        loss_val.item(),
-        example_loss_val.item(),
-        energy_loss_val.item(),
-        example_loss.item() if args.train_example else None,
-        energy_loss.item() if args.train_energy else None,
-    )
+    # Save our reservoir
+    x = trainer.reservoir.cpu().detach().numpy()
+    x = x.reshape(trainer.res_size, -1, 3)
+    traj.xyz = x
+    traj.save(f"ensembles/{args.save}.dcd")
 
     # Generate examples and write trajectory
     net.eval()
@@ -929,20 +777,148 @@ def run_training(args, device):
     x, _ = net.inverse(z)
     x = x.cpu().detach().numpy()
     x = x.reshape(args.batch_size, -1, 3)
+    traj.xyz = x
+    traj.save(f"gen_samples/{args.save}.dcd")
+
+
+def init_ensemble(ensemble_size, data):
+    if data.shape[0] != ensemble_size:
+        print(
+            f"Generating ensemble by sampling from {data.shape[0]} to {ensemble_size}.\n"
+        )
+        sampled = np.random.choice(
+            np.arange(data.shape[0]), ensemble_size, replace=True
+        )
+        ensemble = data[sampled, :]
+    else:
+        ensemble = data
+    return ensemble
+
+
+def init_network(args, device):
+    traj = load_trajectory(args.pdb_path, args.dcd_path, align=True)
     traj.unitcell_lengths = None
     traj.unitcell_angles = None
+
+    n_dim = traj.xyz.shape[1] * 3
+    training_data_npy = traj.xyz.reshape(-1, n_dim)
+    # Shuffle the training data for later training / test split
+    np.random.shuffle(training_data_npy)
+    training_data = torch.from_numpy(training_data_npy.astype("float32"))
+    print(
+        f"Trajectory loaded with size {training_data.shape[0]} x {training_data.shape[1]}"
+    )
+
+    net = build_network(
+        n_dim=n_dim,
+        model_type=args.model_type,
+        topology=traj.topology,
+        training_data=training_data,
+        n_coupling=args.coupling_layers,
+        spline_points=args.spline_points,
+        hidden_features=args.hidden_features,
+        hidden_layers=args.hidden_layers,
+        dropout_fraction=args.dropout_fraction,
+        pretrans_type=args.pretrans_type,
+        pretrans_epochs=args.pretrans_epochs,
+        pretrans_lr=args.pretrans_lr,
+        pretrans_batch_size=args.pretrans_batch_size,
+        device=device,
+    )
+
+    # We do this just to test if we can.
+    openmm_context_ = get_openmm_context(args.pdb_path)
+
+    # Set aside our validation dataset and create our initial ensemble.
+    n_valid = int(training_data.shape[0] * args.validation_fraction)
+    n_train = training_data.shape[0] - n_valid
+    print(
+        f"Splitting data into training ({n_train} points) and validation ({n_valid} points) sets.\n"
+    )
+    validation_data = training_data[:n_valid, :]
+    training_data = training_data[n_valid:, :]
+    ensemble = init_ensemble(args.ensemble_size, training_data)
+
+    # Save everything
+    torch.save(net, f"models/{args.save}.pkl")
+    x = ensemble.cpu().detach().numpy()
+    x = x.reshape(args.ensemble_size, -1, 3)
     traj.xyz = x
-    traj.save(f"sample_traj/{args.output_name}.pdb")
+    traj.save(f"ensembles/{args.save}.dcd")
+    y = validation_data.cpu().detach().numpy()
+    y = y.reshape(n_valid, -1, 3)
+    traj.xyz = y
+    traj.save(f"validation/{args.validation}.dcd")
+
+
+class MixedLossTrainer:
+    def __init__(self, net, device, training_data, validation_data, batch_size, energy_evaluator):
+        self.net = net
+        self.device = device
+        self.training_data = training_data
+        self.validation_data = validation_data
+        self.batch_size = batch_size
+        self.energy_evaluator = energy_evaluator
+
+        self.training_indices = np.arange(self.training_data.shape[0])
+        self.validation_indices = np.arange(self.validation_data.shape[0])
+
+        # Setup latent gaussian distribution
+        mu = torch.zeros(self.training_data.shape[-1] - 6, device=device)
+        cov = torch.eye(self.training_data.shape[-1] - 6, device=device)
+        self.latent_distribution = distributions.MultivariateNormal(
+            mu, covariance_matrix=cov
+        ).expand((self.batch_size,))
+
+        # These statistics are updated during training.
+        self.forward_loss = None
+        self.forward_ml = None
+        self.forward_jac = None
+        self.val_forward_loss = None
+        self.val_forward_ml = None
+        self.val_forward_jac = None
+        self.inverse_loss = None
+        self.inverse_kl = None
+        self.inverse_jac = None
+        self.mean_energy = None
+        self.median_energy = None
+        self.min_energy = None
+        self.acceptance_probs = []
+
+    def compute_training_losses(self):
+        # choose random structures and compute losses
+        example_ind = np.random.choice(self.training_indices, size=self.batch_size, replace=True)
+        x = self.training_data[example_ind, :].to(self.device)
+        z, z_jac = self.net.forward(x, use_middle=True)
+        self.forward_ml = -torch.mean(self.latent_distribution.log_prob(z))
+        self.forward_jac = -torch.mean(z_jac)
+        self.forward_loss = self.forward_ml + self.forward_jac
+
+        # choose random latent and compute losses
+        z_prime = self.latent_distribution.sample().to(self.device)
+        x_prime, x_jac_prime = self.net.inverse(z_prime, use_middle=False)
+        energies = self.energy_evaluator(x_prime)
+        self.min_energy = torch.min(energies)
+        self.median_energy = torch.median(energies)
+        self.mean_energy = torch.mean(energies)
+        self.inverse_kl = torch.mean(energies)
+        self.inverse_jac = -torch.mean(x_jac_prime)
+        self.inverse_loss = self.inverse_kl + self.inverse_jac
+
+    def compute_validation_losses(self):
+        with torch.no_grad():
+            valid_ind = np.random.choice(self.validation_indices, size=self.batch_size, replace=True)
+            x_valid = self.validation_data[valid_ind, :].to(self.device)
+            z_valid, z_jac_valid = self.net.forward(x_valid, use_middle=False)
+            self.val_forward_ml = -torch.mean(self.latent_distribution.log_prob(z_valid))
+            self.val_forward_jac = -torch.mean(z_jac_valid)
+            self.val_forward_loss = self.val_forward_ml + self.val_forward_jac
 
 
 if __name__ == "__main__":
     args = parse_args()
-    if not (args.train_example or args.train_energy):
-        raise RuntimeError(
-            "You must specify at least one of train_example or train_energy."
-        )
 
-    model_path = f"models/{args.output_name}.pkl"
+    model_path = f"models/{args.save}.pkl"
     if os.path.exists(model_path):
         if args.overwrite:
             print(f"Warning: output `{model_path}' already exists. Overwriting anyway.")
@@ -951,9 +927,13 @@ if __name__ == "__main__":
                 f"Output '{model_path}' already exists. If you're sure use --overwrite."
             )
 
-    # Remove any old data for this run
-    delete_run(args.output_name)
-
+    delete_run(args.save)
     create_dirs()
     device = get_device()
-    run_training(args, device)
+
+    if args.action == "init":
+        init_network(args, device)
+    elif args.action == "train":
+        train_network(args, device)
+    else:
+        raise RuntimeError(f"Unknown command {args.action}.")
