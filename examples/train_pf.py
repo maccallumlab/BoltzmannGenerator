@@ -399,7 +399,7 @@ def build_nsf_unconditional(n_dim, spline_points):
         [n_dim],
         num_bins=spline_points,
         tails="linear",
-        tail_bound=5,
+        tail_bound=15,
         identity_init=True,
     )
     return [nsf]
@@ -424,7 +424,7 @@ def build_nsf_coupling(
                 use_batch_norm=False,
             ),
             tails="linear",
-            tail_bound=5,
+            tail_bound=15,
             num_bins=spline_points,
             apply_unconditional_transform=False,
         )
@@ -439,7 +439,7 @@ def build_nsf_coupling(
                 use_batch_norm=False,
             ),
             tails="linear",
-            tail_bound=5,
+            tail_bound=15,
             num_bins=spline_points,
             apply_unconditional_transform=False,
         )
@@ -460,7 +460,7 @@ def build_nsf_made(
         use_batch_norm=False,
         num_bins=spline_points,
         tails="linear",
-        tail_bound=5,
+        tail_bound=15,
     )
     return [made]
 
