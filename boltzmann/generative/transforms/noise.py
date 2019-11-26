@@ -16,36 +16,31 @@ class NoiseTransform(Transform):
         return inputs + noise, torch.zeros(inputs.shape[0], device=inputs.device)
 
 
-class SelectiveMiddleComposite(Transform):
-    def __init__(self, head, middle, tail):
+class TwoStageComposite(Transform):
+    def __init__(self, stage1, stage2):
         super().__init__()
-        self.head = head
-        self.middle = middle
-        self.tail = tail
+        self.stage1 = stage1
+        self.stage2 = stage2
 
-    def forward(self, inputs, context=None, use_middle=True):
-        x, jac_head = self.head.forward(inputs, context)
-        jac_total = jac_head
+    def forward(self, inputs, context=None):
+        x, jac = self.stage1.forward(inputs, context)
+        x, jac2 = self.stage2.forward(x, context)
+        return x, jac + jac2
 
-        if use_middle:
-            x, jac_middle = self.middle.forward(x, context)
-            jac_total = jac_total + jac_middle
+    def inverse(self, inputs, context=None):
+        x, jac = self.stage2.inverse(inputs, context)
+        x, jac2 = self.stage1.inverse(x, context)
+        return x, jac + jac2
 
-        x, jac_tail = self.tail.forward(x, context)
-        jac_total = jac_total + jac_tail
+    def stage1_forward(self, inputs, context=None):
+        return self.stage1.forward(inputs, context)
 
-        return x, jac_total
+    def stage1_inverse(self, inputs, context=None):
+        return self.stage1.inverse(inputs, context)
 
-    def inverse(self, inputs, context=None, use_middle=True):
-        x, jac_tail = self.tail.inverse(inputs, context)
-        jac_total = jac_tail
+    def stage2_forward(self, inputs, context=None):
+        return self.stage2.forward(inputs, context)
 
-        if use_middle:
-            x, jac_middle = self.middle.inverse(x, context)
-            jac_total = jac_total + jac_middle
-
-        x, jac_head = self.head.inverse(x, context)
-        jac_total = jac_total + jac_head
-
-        return x, jac_total
+    def stage2_inverse(self, inputs, context=None):
+        return self.stage2.inverse(inputs, context)
 

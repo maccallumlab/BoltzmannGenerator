@@ -91,7 +91,7 @@ def parse_args():
     network_group.add_argument(
         "--spline-points",
         type=int,
-        default=32,
+        default=8,
         help="number of spline points in NSF layers (default: %(default)d)",
     )
     network_group.add_argument(
@@ -465,20 +465,20 @@ def build_network(
     training_data = training_data.to(device)
 
     print("Creating network")
-    head_layers = []
+    stage1_layers = []
 
     # Create the mixed transofrm layer
     pca_block = protein.PCABlock("backbone", True)
     mixed = protein.MixedTransform(n_dim, topology, [pca_block], training_data)
-    head_layers.append(mixed)
+    stage1_layers.append(mixed)
 
     if pretrans_type == "quad-cdf":
         print()
         print("Pre-training unconditional NSF layer")
         print()
         unconditional = build_nsf_unconditional(n_dim - 6, spline_points)[0]
-        head_layers.append(unconditional)
-        unconditional_net = transforms.CompositeTransform(head_layers).to(device)
+        stage1_layers.append(unconditional)
+        unconditional_net = transforms.CompositeTransform(stage1_layers).to(device)
         pre_train_unconditional_nsf(
             unconditional_net,
             device,
@@ -492,24 +492,23 @@ def build_network(
         print("Pretraining completed. Freezing weights")
         unconditional.unnormalized_heights.requires_grad_(False)
         unconditional.unnormalized_widths.requires_grad_(False)
+        unconditional.unnormalized_derivatives.requires_grad_(False)
+        stage1 = unconditional_net
+    else:
+        stage1 = transforms.CompositeTransform(head_layers).to(device)
 
-    head = transforms.CompositeTransform(head_layers).to(device)
-
-    middle = transforms.NoiseTransform(0.5)
-    
-    tail_layers = []
     if model_type == "affine-coupling":
-        new_layers = build_affine_coupling(
+        stage2_layers = build_affine_coupling(
             n_dim - 6, n_coupling, hidden_layers, hidden_features, dropout_fraction
         )
     elif model_type == "affine-made":
-        new_layers = build_affine_made(
+        stage2_layers = build_affine_made(
             n_dim - 6, hidden_layers, hidden_features, dropout_fraction
         )
     elif model_type == "nsf-unconditional":
-        new_layers = build_nsf_unconditional(n_dim - 6, spline_points)
+        stage2_layers = build_nsf_unconditional(n_dim - 6, spline_points)
     elif model_type == "nsf-coupling":
-        new_layers = build_nsf_coupling(
+        stage2_layers = build_nsf_coupling(
             n_dim - 6,
             n_coupling,
             spline_points,
@@ -518,16 +517,15 @@ def build_network(
             dropout_fraction,
         )
     elif model_type == "nsf-made":
-        new_layers = build_nsf_made(
+        stage2_layers = build_nsf_made(
             n_dim - 6, spline_points, hidden_layers, hidden_features, dropout_fraction
         )
     else:
         raise RuntimeError()
+    
+    stage2 = transforms.CompositeTransform(stage2_layers).to(device)
 
-    tail_layers.extend(new_layers)
-    tail = transforms.CompositeTransform(tail_layers).to(device)
-
-    net = transforms.SelectiveMiddleComposite(head, middle, tail)
+    net = transforms.TwoStageComposite(stage1, stage2)
     print()
     print("Network constructed.")
     print(net)
@@ -886,17 +884,26 @@ class MixedLossTrainer:
         self.acceptance_probs = []
 
     def compute_training_losses(self):
-        # choose random structures and compute losses
-        example_ind = np.random.choice(self.training_indices, size=self.batch_size, replace=True)
-        x = self.training_data[example_ind, :].to(self.device)
-        z, z_jac = self.net.forward(x, use_middle=True)
+        with torch.no_grad():
+            # choose random examples
+            example_ind = np.random.choice(self.training_indices, size=self.batch_size, replace=True)
+            x = self.training_data[example_ind, :].to(self.device)
+            # transform through stage1
+            z_pretrans, _ = self.net.stage1_forward(x)
+            # add noise
+            z_pretrans = z_pretrans + torch.normal(0, 0.3, size=z_pretrans.shape, device=z_pretrans.device)
+            # transform back to x
+            x, _ = self.net.stage1_inverse(z_pretrans)
+        # transform through full network
+        z, z_jac = self.net.forward(x)
+        # compute loss
         self.forward_ml = -torch.mean(self.latent_distribution.log_prob(z))
         self.forward_jac = -torch.mean(z_jac)
         self.forward_loss = self.forward_ml + self.forward_jac
 
         # choose random latent and compute losses
         z_prime = self.latent_distribution.sample().to(self.device)
-        x_prime, x_jac_prime = self.net.inverse(z_prime, use_middle=False)
+        x_prime, x_jac_prime = self.net.inverse(z_prime)
         energies = self.energy_evaluator(x_prime)
         self.min_energy = torch.min(energies)
         self.median_energy = torch.median(energies)
@@ -909,7 +916,7 @@ class MixedLossTrainer:
         with torch.no_grad():
             valid_ind = np.random.choice(self.validation_indices, size=self.batch_size, replace=True)
             x_valid = self.validation_data[valid_ind, :].to(self.device)
-            z_valid, z_jac_valid = self.net.forward(x_valid, use_middle=False)
+            z_valid, z_jac_valid = self.net.forward(x_valid)
             self.val_forward_ml = -torch.mean(self.latent_distribution.log_prob(z_valid))
             self.val_forward_jac = -torch.mean(z_jac_valid)
             self.val_forward_loss = self.val_forward_ml + self.val_forward_jac
