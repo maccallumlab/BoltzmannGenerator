@@ -152,7 +152,7 @@ def parse_args():
     )
     noise_group.add_argument(
         "--max-noise",
-        default=0.1,
+        default=0.7,
         type=float,
         help="maximum example noise level for automatic training noise (default: %(default)g)",
     )
@@ -877,9 +877,11 @@ def init_network(args, device):
     )
 
     if args.training_noise is None:
-        print(f"Using automatic noise level detection with {args.n_noise} trials.")
+        print(
+            f"Using automatic noise level detection with {args.n_noise} trials from {args.min_noise} to {args.max_noise}."
+        )
         net.example_noise = calculate_example_noise(
-            net, training_data, args.min_noise, args.max_noise, args.n_noise
+            net, training_data.to(device), args.min_noise, args.max_noise, args.n_noise
         )
         print(f"Using automatically determined noise level {net.example_noise}.\n")
     else:
