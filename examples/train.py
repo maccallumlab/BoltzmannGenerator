@@ -7,6 +7,8 @@ from boltzmann.generative import transforms
 from boltzmann import nn
 from boltzmann import utils
 from boltzmann import training
+from sklearn.neighbors.kde import KernelDensity
+from sklearn.model_selection import GridSearchCV
 from simtk import openmm as mm
 from simtk.openmm import app
 import numpy as np
@@ -132,6 +134,33 @@ def parse_args():
         type=int,
         default=1024,
         help="batch size for pretransformation training (default: %(default)g)",
+    )
+
+    # Noise parameters
+    noise_group = init_parser.add_argument_group("noise parameters")
+    noise_group.add_argument(
+        "--training-noise",
+        default=None,
+        type=float,
+        help="amount of noise to add to training examples (default: automatic)",
+    )
+    noise_group.add_argument(
+        "--min-noise",
+        default=0.1,
+        type=float,
+        help="minimum example noise level for automatic training noise (default: %(default)g)",
+    )
+    noise_group.add_argument(
+        "--max-noise",
+        default=0.1,
+        type=float,
+        help="maximum example noise level for automatic training noise (default: %(default)g)",
+    )
+    noise_group.add_argument(
+        "--n-noise",
+        default=10,
+        type=int,
+        help="number of trial values for automatic training noise (default: %(default)g)",
     )
 
     #
@@ -522,7 +551,7 @@ def build_network(
         )
     else:
         raise RuntimeError()
-    
+
     stage2 = transforms.CompositeTransform(stage2_layers).to(device)
 
     net = transforms.TwoStageComposite(stage1, stage2)
@@ -702,7 +731,9 @@ def train_network(args, device):
         device=device,
     )
 
-    trainer = MixedLossTrainer(net, device, ensemble, validation_data, args.batch_size, energy_evaluator)
+    trainer = MixedLossTrainer(
+        net, device, ensemble, validation_data, args.batch_size, energy_evaluator
+    )
 
     with tqdm(range(args.epochs)) as progress:
         for epoch in progress:
@@ -721,12 +752,16 @@ def train_network(args, device):
             optimizer.step()
             scheduler.step(epoch)
 
-            validation_step = (epoch % args.log_freq == 0)
+            validation_step = epoch % args.log_freq == 0
             if validation_step:
                 net.eval()
                 trainer.compute_validation_losses()
-                writer.add_scalar("val_example_ml_loss", trainer.val_forward_ml.item(), epoch)
-                writer.add_scalar("val_example_jac_loss", trainer.val_forward_jac.item(), epoch)
+                writer.add_scalar(
+                    "val_example_ml_loss", trainer.val_forward_ml.item(), epoch
+                )
+                writer.add_scalar(
+                    "val_example_jac_loss", trainer.val_forward_jac.item(), epoch
+                )
                 writer.add_scalar(
                     "val_example_total_loss", trainer.val_forward_loss.item(), epoch
                 )
@@ -779,6 +814,23 @@ def train_network(args, device):
     traj.save(f"gen_samples/{args.save}.dcd")
 
 
+def calculate_example_noise(net, training_data, min_noise, max_noise, n_noise):
+    # Run all training data through the pretransformation stage of the network
+    transformed_data, _ = net.stage1_forward(training_data)
+    transformed_data = transformed_data.cpu().detach().numpy()
+    np.random.shuffle(transformed_data)
+    params = {"bandwidth": np.linspace(min_noise, max_noise, n_noise)}
+    grid = GridSearchCV(
+        KernelDensity(kernel="gaussian", atol=1e-4, rtol=1e-4),
+        params,
+        cv=3,
+        return_train_score=False,
+    )
+    grid.fit(transformed_data)
+    # Use cross-validation to identify the optimal noise bandwidth.
+    return grid.best_params_["bandwidth"]
+
+
 def init_ensemble(ensemble_size, data):
     if data.shape[0] != ensemble_size:
         print(
@@ -824,6 +876,16 @@ def init_network(args, device):
         device=device,
     )
 
+    if args.training_noise is None:
+        print(f"Using automatic noise level detection with {args.n_noise} trials.")
+        net.example_noise = calculate_example_noise(
+            net, training_data, args.min_noise, args.max_noise, args.n_noise
+        )
+        print(f"Using automatically determined noise level {net.example_noise}.\n")
+    else:
+        net.example_noise = args.training_noise
+        print(f"Using noise level {net.example_noise} specified on command line.\n")
+
     # We do this just to test if we can.
     openmm_context_ = get_openmm_context(args.pdb_path)
 
@@ -850,7 +912,9 @@ def init_network(args, device):
 
 
 class MixedLossTrainer:
-    def __init__(self, net, device, training_data, validation_data, batch_size, energy_evaluator):
+    def __init__(
+        self, net, device, training_data, validation_data, batch_size, energy_evaluator
+    ):
         self.net = net
         self.device = device
         self.training_data = training_data
@@ -886,12 +950,19 @@ class MixedLossTrainer:
     def compute_training_losses(self):
         with torch.no_grad():
             # choose random examples
-            example_ind = np.random.choice(self.training_indices, size=self.batch_size, replace=True)
+            example_ind = np.random.choice(
+                self.training_indices, size=self.batch_size, replace=True
+            )
             x = self.training_data[example_ind, :].to(self.device)
             # transform through stage1
             z_pretrans, _ = self.net.stage1_forward(x)
             # add noise
-            z_pretrans = z_pretrans + torch.normal(0, 0.3, size=z_pretrans.shape, device=z_pretrans.device)
+            z_pretrans = z_pretrans + torch.normal(
+                0,
+                self.net.example_noise,
+                size=z_pretrans.shape,
+                device=z_pretrans.device,
+            )
             # transform back to x
             x, _ = self.net.stage1_inverse(z_pretrans)
         # transform through full network
@@ -914,10 +985,14 @@ class MixedLossTrainer:
 
     def compute_validation_losses(self):
         with torch.no_grad():
-            valid_ind = np.random.choice(self.validation_indices, size=self.batch_size, replace=True)
+            valid_ind = np.random.choice(
+                self.validation_indices, size=self.batch_size, replace=True
+            )
             x_valid = self.validation_data[valid_ind, :].to(self.device)
             z_valid, z_jac_valid = self.net.forward(x_valid)
-            self.val_forward_ml = -torch.mean(self.latent_distribution.log_prob(z_valid))
+            self.val_forward_ml = -torch.mean(
+                self.latent_distribution.log_prob(z_valid)
+            )
             self.val_forward_jac = -torch.mean(z_jac_valid)
             self.val_forward_loss = self.val_forward_ml + self.val_forward_jac
 
